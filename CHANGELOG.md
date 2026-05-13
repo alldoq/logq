@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.2 — 2026-05-13
+
+- `.jsonl.zst` / `.ndjson.zst` / `.json.zst` support — decompressed to a
+  tempdir at startup and registered with DuckDB.
+- `--remote user@host:/path/*.jsonl` flag — streams a remote machine's
+  logs through `ssh tail -F` into the live-tail panel. Multiple allowed.
+
 ## v0.1.1 — 2026-05-13
 
 - Live tail: WebSocket stream of newly appended lines (`--tail` flag or UI toggle).

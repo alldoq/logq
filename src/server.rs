@@ -1,5 +1,6 @@
 use crate::db::{detect_facets, infer_level_col, infer_timestamp_col, load_schema_config, Db, QueryResult};
-use crate::tail;
+use crate::scan::FileKind;
+use crate::{tail, zst};
 use crate::saved::{self, SavedQueries, SavedQuery};
 use crate::scan::FileEntry;
 use anyhow::Result;
@@ -29,12 +30,28 @@ pub struct AppState {
     pub columns: Vec<(String, String)>,
     pub tail_tx: broadcast::Sender<String>,
     pub tail_enabled: std::sync::atomic::AtomicBool,
+    #[allow(dead_code)]
+    pub tempdir: Option<tempfile::TempDir>,
 }
 
 impl AppState {
     pub fn new(dir: PathBuf, files: Vec<FileEntry>) -> Result<Arc<Self>> {
         let db = Db::open()?;
-        let paths: Vec<std::path::PathBuf> = files.iter().map(|f| f.path.clone()).collect();
+        // Decompress any .zst files to a tempdir so DuckDB can read them.
+        let mut tempdir: Option<tempfile::TempDir> = None;
+        let paths: Vec<std::path::PathBuf> = files.iter().map(|f| {
+            if f.kind == FileKind::JsonlZst {
+                if tempdir.is_none() {
+                    tempdir = tempfile::Builder::new().prefix("logq-zst-").tempdir().ok();
+                }
+                if let Some(td) = &tempdir {
+                    if let Ok(p) = zst::decompress_to(&f.path, td.path()) {
+                        return p;
+                    }
+                }
+            }
+            f.path.clone()
+        }).collect();
         let schema = load_schema_config(&dir);
         db.register_logs_view(&paths, &schema)?;
         let columns = db.columns().unwrap_or_default();
@@ -52,6 +69,7 @@ impl AppState {
             columns,
             tail_tx,
             tail_enabled: std::sync::atomic::AtomicBool::new(false),
+            tempdir,
         }))
     }
 }

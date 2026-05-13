@@ -15,6 +15,7 @@ pub struct FileEntry {
 pub enum FileKind {
     Jsonl,
     JsonlGz,
+    JsonlZst,
     Json,
     Log,
 }
@@ -24,6 +25,7 @@ impl FileKind {
         match self {
             FileKind::Jsonl => "jsonl",
             FileKind::JsonlGz => "gz-jsonl",
+            FileKind::JsonlZst => "zst-jsonl",
             FileKind::Json => "json",
             FileKind::Log => "log",
         }
@@ -36,6 +38,8 @@ pub fn classify(path: &Path) -> Option<FileKind> {
         Some(FileKind::Jsonl)
     } else if name.ends_with(".jsonl.gz") || name.ends_with(".ndjson.gz") || name.ends_with(".json.gz") {
         Some(FileKind::JsonlGz)
+    } else if name.ends_with(".jsonl.zst") || name.ends_with(".ndjson.zst") || name.ends_with(".json.zst") {
+        Some(FileKind::JsonlZst)
     } else if name.ends_with(".json") {
         Some(FileKind::Json)
     } else if name.ends_with(".log") {

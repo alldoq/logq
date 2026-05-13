@@ -24,6 +24,7 @@ Flags:
 - `--host <H>` — bind (default `127.0.0.1`)
 - `--no-open` — don't auto-launch browser
 - `--tail` — start the live-tail watcher at startup
+- `--remote user@host:/path/*.jsonl` — stream a remote machine's logs into the live-tail panel over SSH (key-based auth required). May be passed multiple times
 
 UI features:
 - **Live tail** — toggle button streams newly appended lines via WebSocket.
@@ -42,7 +43,7 @@ UI features:
 
 ## What it does
 
-- Scans dir for `.jsonl`, `.ndjson`, `.jsonl.gz`, `.ndjson.gz`, `.json.gz`.
+- Scans dir for `.jsonl`, `.ndjson`, `.jsonl.gz`, `.ndjson.gz`, `.json.gz`, `.jsonl.zst`, `.ndjson.zst`, `.json.zst`.
 - Registers a `logs` view via DuckDB `read_json_auto` (union schema, ignore errors).
 - Infers timestamp column (`ts`, `timestamp`, `time`, `@timestamp`, or any TIMESTAMP-typed col).
 - Infers level column (`level`, `severity`, …).
@@ -52,7 +53,7 @@ UI features:
 
 ## Status
 
-v0.1 MVP per `logq-spec.md` §12 plus several v0.5 items (live tail, chart toggle, URL state, schema overrides). Not yet implemented: remote tail over SSH, `.zst` support, Homebrew formula.
+Covers `logq-spec.md` §12 v0.1 MVP plus most v0.5/v1.0 items: live tail, chart toggle, URL state, schema overrides, `.zst` support, remote tail over SSH. Not yet: Homebrew formula, performance hardening for 100 GB+ datasets, custom-format inference plugins.
 
 ## License
 

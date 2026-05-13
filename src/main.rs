@@ -3,6 +3,8 @@ mod db;
 mod server;
 mod saved;
 mod tail;
+mod zst;
+mod remote;
 
 use anyhow::Result;
 use clap::Parser;
@@ -30,6 +32,11 @@ struct Cli {
     /// Auto-start live tail watcher
     #[arg(long, default_value_t = false)]
     tail: bool,
+
+    /// Stream remote logs over SSH: --remote user@host:/var/log/*.jsonl
+    /// Multiple allowed. Requires `ssh` on PATH and key-based auth.
+    #[arg(long = "remote")]
+    remote: Vec<String>,
 }
 
 #[tokio::main]
@@ -74,6 +81,17 @@ async fn main() -> Result<()> {
             }
         });
         println!("→ Live tail watcher started");
+    }
+
+    for spec in &cli.remote {
+        let spec = spec.clone();
+        let tx = state.tail_tx.clone();
+        println!("→ Streaming remote: {}", spec);
+        std::thread::spawn(move || {
+            if let Err(e) = remote::stream(&spec, tx) {
+                tracing::error!("remote tail {} error: {}", spec, e);
+            }
+        });
     }
 
     let url = format!("http://{}:{}", cli.host, cli.port);
