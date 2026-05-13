@@ -1,11 +1,12 @@
 # Changelog
 
-## Unreleased
+## v0.1.1 — 2026-05-13
 
 - Live tail: WebSocket stream of newly appended lines (`--tail` flag or UI toggle).
 - Chart toggle: bar / line / table view for any GROUP BY result.
 - Copy-link button encodes SQL + view in URL hash for shareable views.
 - Schema overrides via `.logq/schema.yml` — coerce columns to TIMESTAMP / BIGINT / DOUBLE etc.
+- Fix: Windows MSVC link error (`unresolved external symbol RmStartSession`) — link `rstrtmgr.lib` for the DuckDB bundled C++ build.
 
 ## v0.1.0 — 2026-05-13
 
