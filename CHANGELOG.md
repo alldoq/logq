@@ -6,6 +6,17 @@
   tempdir at startup and registered with DuckDB.
 - `--remote user@host:/path/*.jsonl` flag — streams a remote machine's
   logs through `ssh tail -F` into the live-tail panel. Multiple allowed.
+- **CSV / TSV / Parquet** support — `.csv`, `.tsv`, `.csv.gz`, `.parquet`
+  scanned and UNION'd by name into the `logs` view alongside JSONL.
+- **Column-header stats** — click any header for top-25 values + distinct
+  count via a new `/api/column-stats` endpoint (scoped to current query).
+- **JSON cell expand** — click a nested cell to open a pretty-printed
+  modal with the full structure.
+- **Export** — CSV and Parquet download buttons (`/api/export`) run a
+  `COPY (...) TO` on the current SQL.
+- **Dockerfile** + GHCR multi-arch publish workflow on tag push.
+- **Homebrew tap template** + `scripts/update-homebrew.sh` to render
+  `Formula/logq.rb` from a published release's SHA256 sums.
 
 ## v0.1.1 — 2026-05-13
 

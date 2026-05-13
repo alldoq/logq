@@ -1,0 +1,7 @@
+target/
+.git/
+sample-data/
+docs/
+.github/
+*.md
+!CHANGELOG.md

@@ -41,8 +41,15 @@ impl Db {
     }
 
     /// Register a `logs` view over the given files, applying optional schema overrides.
-    pub fn register_logs_view(&self, files: &[std::path::PathBuf], schema: &SchemaConfig) -> Result<()> {
-        if files.is_empty() {
+    /// Files are dispatched per-kind to the right DuckDB reader, then UNION'd via union_by_name.
+    pub fn register_logs_view(
+        &self,
+        json_files: &[std::path::PathBuf],
+        csv_files: &[std::path::PathBuf],
+        parquet_files: &[std::path::PathBuf],
+        schema: &SchemaConfig,
+    ) -> Result<()> {
+        if json_files.is_empty() && csv_files.is_empty() && parquet_files.is_empty() {
             self.conn.execute(
                 "CREATE OR REPLACE VIEW logs_raw AS SELECT NULL::VARCHAR AS msg WHERE FALSE",
                 params![],
@@ -53,20 +60,42 @@ impl Db {
             )?;
             return Ok(());
         }
-        let list = files
-            .iter()
-            .map(|p| format!("'{}'", p.to_string_lossy().replace('\'', "''")))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let raw_sql = format!(
-            "CREATE OR REPLACE VIEW logs_raw AS \
-             SELECT * FROM read_json_auto([{}], \
-                 union_by_name=true, \
-                 ignore_errors=true, \
-                 maximum_object_size=33554432, \
-                 filename=true)",
-            list
-        );
+
+        let fmt_list = |files: &[std::path::PathBuf]| -> String {
+            files
+                .iter()
+                .map(|p| format!("'{}'", p.to_string_lossy().replace('\'', "''")))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+
+        let mut parts: Vec<String> = Vec::new();
+        if !json_files.is_empty() {
+            parts.push(format!(
+                "SELECT * FROM read_json_auto([{}], \
+                     union_by_name=true, ignore_errors=true, \
+                     maximum_object_size=33554432, filename=true)",
+                fmt_list(json_files)
+            ));
+        }
+        if !csv_files.is_empty() {
+            parts.push(format!(
+                "SELECT * FROM read_csv_auto([{}], union_by_name=true, filename=true)",
+                fmt_list(csv_files)
+            ));
+        }
+        if !parquet_files.is_empty() {
+            parts.push(format!(
+                "SELECT * FROM read_parquet([{}], union_by_name=true, filename=true)",
+                fmt_list(parquet_files)
+            ));
+        }
+        let body = if parts.len() == 1 {
+            parts.pop().unwrap()
+        } else {
+            parts.into_iter().map(|p| format!("({})", p)).collect::<Vec<_>>().join(" UNION ALL BY NAME ")
+        };
+        let raw_sql = format!("CREATE OR REPLACE VIEW logs_raw AS {}", body);
         self.conn.execute(&raw_sql, params![])?;
 
         // Get raw columns to build override projection

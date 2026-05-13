@@ -1,4 +1,5 @@
 use crate::db::{detect_facets, infer_level_col, infer_timestamp_col, load_schema_config, Db, QueryResult};
+use duckdb::params;
 use crate::scan::FileKind;
 use crate::{tail, zst};
 use crate::saved::{self, SavedQueries, SavedQuery};
@@ -39,21 +40,29 @@ impl AppState {
         let db = Db::open()?;
         // Decompress any .zst files to a tempdir so DuckDB can read them.
         let mut tempdir: Option<tempfile::TempDir> = None;
-        let paths: Vec<std::path::PathBuf> = files.iter().map(|f| {
-            if f.kind == FileKind::JsonlZst {
+        let mut json_paths: Vec<std::path::PathBuf> = Vec::new();
+        let mut csv_paths: Vec<std::path::PathBuf> = Vec::new();
+        let mut parquet_paths: Vec<std::path::PathBuf> = Vec::new();
+        for f in &files {
+            let path = if f.kind == FileKind::JsonlZst {
                 if tempdir.is_none() {
                     tempdir = tempfile::Builder::new().prefix("logq-zst-").tempdir().ok();
                 }
-                if let Some(td) = &tempdir {
-                    if let Ok(p) = zst::decompress_to(&f.path, td.path()) {
-                        return p;
-                    }
+                match tempdir.as_ref().and_then(|td| zst::decompress_to(&f.path, td.path()).ok()) {
+                    Some(p) => p,
+                    None => continue,
                 }
+            } else {
+                f.path.clone()
+            };
+            match f.kind {
+                FileKind::Csv | FileKind::CsvGz => csv_paths.push(path),
+                FileKind::Parquet => parquet_paths.push(path),
+                _ => json_paths.push(path),
             }
-            f.path.clone()
-        }).collect();
+        }
         let schema = load_schema_config(&dir);
-        db.register_logs_view(&paths, &schema)?;
+        db.register_logs_view(&json_paths, &csv_paths, &parquet_paths, &schema)?;
         let columns = db.columns().unwrap_or_default();
         let ts = infer_timestamp_col(&columns);
         let lvl = infer_level_col(&columns);
@@ -83,6 +92,8 @@ pub async fn serve(state: Arc<AppState>, host: &str, port: u16) -> Result<()> {
         .route("/api/saved/delete", post(delete_saved))
         .route("/api/tail", get(tail_ws))
         .route("/api/tail/start", post(tail_start))
+        .route("/api/column-stats", post(column_stats))
+        .route("/api/export", post(export_data))
         .fallback(static_handler)
         .with_state(state);
 
@@ -248,6 +259,125 @@ async fn delete_saved(State(s): State<Arc<AppState>>, Json(req): Json<DelReq>) -
         Ok(_) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))),
     }
+}
+
+#[derive(Deserialize)]
+struct ColStatsReq {
+    column: String,
+    #[serde(default)]
+    sql: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ColStatsResp {
+    column: String,
+    top_values: Vec<(String, i64)>,
+    distinct: Option<i64>,
+    error: Option<String>,
+}
+
+async fn column_stats(State(s): State<Arc<AppState>>, Json(req): Json<ColStatsReq>) -> Json<ColStatsResp> {
+    let safe = req.column.replace('"', "\"\"");
+    let base = match req.sql {
+        Some(q) if !q.trim().is_empty() => format!("({}) AS sub", q.trim().trim_end_matches(';')),
+        _ => "logs".to_string(),
+    };
+    let db = s.db.lock().unwrap_or_else(|e| e.into_inner());
+    let distinct_q = format!("SELECT COUNT(DISTINCT \"{}\") FROM {}", safe, base);
+    let distinct = db.conn.prepare(&distinct_q)
+        .and_then(|mut stmt| stmt.query_row::<i64, _, _>([], |r| r.get(0)))
+        .ok();
+    let top_q = format!(
+        "SELECT CAST(\"{c}\" AS VARCHAR), COUNT(*) AS n FROM {base} GROUP BY 1 ORDER BY n DESC LIMIT 25",
+        c = safe, base = base
+    );
+    match db.query(&top_q) {
+        Ok(r) => {
+            let top: Vec<(String, i64)> = r.rows.into_iter().filter_map(|row| {
+                let v = row.get(0)?;
+                let label = match v {
+                    serde_json::Value::Null => "(null)".to_string(),
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                let count = row.get(1)?.as_i64().unwrap_or(0);
+                Some((label, count))
+            }).collect();
+            Json(ColStatsResp { column: req.column, top_values: top, distinct, error: None })
+        }
+        Err(e) => Json(ColStatsResp { column: req.column, top_values: vec![], distinct, error: Some(e.to_string()) }),
+    }
+}
+
+#[derive(Deserialize)]
+struct ExportReq {
+    sql: String,
+    format: String, // "csv" | "json" | "parquet"
+}
+
+async fn export_data(State(s): State<Arc<AppState>>, Json(req): Json<ExportReq>) -> Response {
+    let fmt = req.format.to_lowercase();
+    let sql = req.sql.trim().trim_end_matches(';');
+    let db = s.db.lock().unwrap_or_else(|e| e.into_inner());
+
+    let (content_type, filename, body): (&str, &str, Vec<u8>) = match fmt.as_str() {
+        "csv" => {
+            let tmp = match tempfile::Builder::new().suffix(".csv").tempfile() {
+                Ok(t) => t, Err(e) => return error_resp(e.to_string()),
+            };
+            let p = tmp.path().to_string_lossy().replace('\'', "''");
+            let copy_excl = format!(
+                "COPY (SELECT * EXCLUDE (filename) FROM ({}) sub) TO '{}' (HEADER, FORMAT CSV)",
+                sql, p
+            );
+            if db.conn.execute(&copy_excl, params![]).is_err() {
+                let copy = format!("COPY ({}) TO '{}' (HEADER, FORMAT CSV)", sql, p);
+                if let Err(e) = db.conn.execute(&copy, params![]) {
+                    return error_resp(e.to_string());
+                }
+            }
+            let data = std::fs::read(tmp.path()).unwrap_or_default();
+            ("text/csv", "logq-export.csv", data)
+        }
+        "parquet" => {
+            let tmp = match tempfile::Builder::new().suffix(".parquet").tempfile() {
+                Ok(t) => t, Err(e) => return error_resp(e.to_string()),
+            };
+            let p = tmp.path().to_string_lossy().replace('\'', "''");
+            // Try to drop the auto-injected `filename` column so re-imports don't collide,
+            // but fall back to a vanilla COPY if the subquery has no such column.
+            let copy_excl = format!(
+                "COPY (SELECT * EXCLUDE (filename) FROM ({}) sub) TO '{}' (FORMAT PARQUET)",
+                sql, p
+            );
+            if db.conn.execute(&copy_excl, params![]).is_err() {
+                let copy = format!("COPY ({}) TO '{}' (FORMAT PARQUET)", sql, p);
+                if let Err(e) = db.conn.execute(&copy, params![]) {
+                    return error_resp(e.to_string());
+                }
+            }
+            let data = std::fs::read(tmp.path()).unwrap_or_default();
+            ("application/octet-stream", "logq-export.parquet", data)
+        }
+        _ => {
+            // JSON
+            let r = match db.query(sql) { Ok(r) => r, Err(e) => return error_resp(e.to_string()) };
+            let body = serde_json::to_vec(&serde_json::json!({"columns": r.columns, "rows": r.rows})).unwrap_or_default();
+            ("application/json", "logq-export.json", body)
+        }
+    };
+    drop(db);
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CONTENT_DISPOSITION, &format!("attachment; filename=\"{}\"", filename)),
+        ],
+        body,
+    ).into_response()
+}
+
+fn error_resp(msg: String) -> Response {
+    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": msg}))).into_response()
 }
 
 async fn tail_start(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {

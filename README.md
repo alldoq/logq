@@ -1,10 +1,24 @@
 # logq
 
-Local-first JSONL log explorer. Point at a folder, get a web UI with SQL, histograms, facets. Powered by DuckDB.
+Local-first JSONL / CSV / Parquet log explorer. Point at a folder, get a web UI with SQL, histograms, facets, charts, live tail, and exports. Powered by DuckDB.
 
-**Site:** https://alldoq.github.io/logq/ · **Releases:** https://github.com/alldoq/logq/releases
+**Site:** https://alldoq.github.io/logq/ · **Releases:** https://github.com/alldoq/logq/releases · **Container:** `ghcr.io/alldoq/logq`
 
-## Build
+## Install
+
+### Docker / Podman
+
+```bash
+docker run --rm -p 7777:7777 -v "$PWD/logs:/data" ghcr.io/alldoq/logq:latest
+```
+
+### Homebrew (after first tap is published)
+
+```bash
+brew install alldoq/tap/logq
+```
+
+### From source
 
 ```bash
 cargo build --release
@@ -30,6 +44,9 @@ UI features:
 - **Live tail** — toggle button streams newly appended lines via WebSocket.
 - **Chart toggle** — switch any GROUP BY result between table/bar/line.
 - **Copy link** — encodes the current SQL + view into the URL hash for sharing.
+- **Column-header stats** — click any column header for top-25 value counts + distinct count, scoped to the current query.
+- **JSON cell expand** — click a nested cell to open a pretty-printed JSON modal.
+- **Export** — CSV and Parquet download buttons run a `COPY (...) TO` on the current query.
 - **Schema overrides** — drop a `.logq/schema.yml` in the target dir to coerce columns:
 
   ```yaml
@@ -43,7 +60,7 @@ UI features:
 
 ## What it does
 
-- Scans dir for `.jsonl`, `.ndjson`, `.jsonl.gz`, `.ndjson.gz`, `.json.gz`, `.jsonl.zst`, `.ndjson.zst`, `.json.zst`.
+- Scans dir for JSONL (`.jsonl` / `.ndjson` / `.json.gz` / `.jsonl.zst` / etc), CSV/TSV (incl. `.csv.gz`), and Parquet — all UNION'd by name into one `logs` view.
 - Registers a `logs` view via DuckDB `read_json_auto` (union schema, ignore errors).
 - Infers timestamp column (`ts`, `timestamp`, `time`, `@timestamp`, or any TIMESTAMP-typed col).
 - Infers level column (`level`, `severity`, …).

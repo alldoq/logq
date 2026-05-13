@@ -71,9 +71,37 @@ button:hover { filter: brightness(1.1); }
 .tail-row .file { color: var(--dim); margin-right: 6px; }
 #tail-toggle.on { background: var(--ok); color: #0b0f14; border-color: var(--ok); }
 .chart-svg { width: 100%; height: 100%; }
+
+/* Modal */
+.modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none;
+  align-items: center; justify-content: center; z-index: 100; }
+.modal-bg.show { display: flex; }
+.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  max-width: 80vw; max-height: 80vh; overflow: auto; padding: 16px; }
+.modal h3 { margin: 0 0 8px; font-size: 13px; color: var(--accent); }
+.modal pre { background: var(--bg); padding: 12px; border-radius: 4px;
+  font-family: var(--mono); font-size: 12px; max-height: 60vh; overflow: auto; }
+.modal .close { float: right; cursor: pointer; color: var(--dim); background: transparent;
+  border: 0; font-size: 20px; padding: 0; }
+.col-stats { font-family: var(--mono); font-size: 12px; min-width: 360px; }
+.col-stats .row { display: flex; justify-content: space-between; padding: 3px 0;
+  border-bottom: 1px solid #1f262e; }
+.col-stats .row .bar { flex: 1; margin: 0 8px; height: 14px; background: var(--bg);
+  position: relative; }
+.col-stats .row .bar > div { background: var(--accent); height: 100%; opacity: 0.7; }
+.col-stats .row .v { color: var(--ok); min-width: 60px; text-align: right; }
+.results th { cursor: pointer; }
+.results th:hover { background: var(--panel2); color: var(--accent); }
 </style>
 </head>
 <body>
+<div class="modal-bg" id="modal-bg">
+  <div class="modal">
+    <button class="close" id="modal-close">×</button>
+    <h3 id="modal-title"></h3>
+    <div id="modal-body"></div>
+  </div>
+</div>
 <div class="app">
   <div class="topbar">
     <h1>logq</h1>
@@ -97,6 +125,8 @@ button:hover { filter: brightness(1.1); }
         <button class="secondary" id="save">Save…</button>
         <button class="secondary" id="copy-link">Copy link</button>
         <button class="secondary" id="tail-toggle">Live tail: off</button>
+        <button class="secondary" id="export-csv">CSV</button>
+        <button class="secondary" id="export-parquet">Parquet</button>
         <span class="status" id="status"></span>
         <span style="margin-left:auto" class="chart-toggle">
           <button class="secondary" data-view="table">Table</button>
@@ -248,15 +278,100 @@ function renderView() {
 }
 
 function renderTable(r) {
-  const thead = "<tr>" + r.columns.map(c => `<th>${c}</th>`).join("") + "</tr>";
+  const thead = "<tr>" + r.columns.map((c, i) => `<th data-col="${c}" data-idx="${i}">${c}</th>`).join("") + "</tr>";
   const tbody = r.rows.map(row =>
-    "<tr>" + row.map(c => `<td title="${typeof c === 'object' ? JSON.stringify(c).replace(/"/g,'&quot;') : String(c ?? '').replace(/"/g,'&quot;')}">${cellHtml(c)}</td>`).join("") + "</tr>"
+    "<tr>" + row.map((c, i) => {
+      const isObj = c !== null && typeof c === "object";
+      const tip = isObj ? JSON.stringify(c).replace(/"/g,'&quot;') : String(c ?? '').replace(/"/g,'&quot;');
+      return `<td data-idx="${i}" title="${tip}">${cellHtml(c)}</td>`;
+    }).join("") + "</tr>"
   ).join("");
   $("#results").innerHTML = `<table><thead>${thead}</thead><tbody>${tbody}</tbody></table>`;
+  // Column-header click: stats modal
+  document.querySelectorAll(".results th").forEach(th => {
+    th.addEventListener("click", () => openColumnStats(th.dataset.col));
+  });
+  // Cell click: JSON expand modal for nested data, otherwise inline toggle
   document.querySelectorAll(".results td").forEach(td => {
-    td.addEventListener("click", () => td.classList.toggle("expand"));
+    td.addEventListener("click", () => {
+      const idx = Number(td.dataset.idx);
+      const rowEl = td.parentElement;
+      const rowIdx = Array.from(rowEl.parentElement.children).indexOf(rowEl);
+      const val = r.rows[rowIdx][idx];
+      if (val !== null && (typeof val === "object" || (typeof val === "string" && /^[{\[]/.test(val)))) {
+        openJsonModal(r.columns[idx], val);
+      } else {
+        td.classList.toggle("expand");
+      }
+    });
   });
 }
+
+async function openColumnStats(col) {
+  showModal(`Column · ${col}`, `<div class="col-stats">loading…</div>`);
+  const r = await api("/api/column-stats", { column: col, sql: state.lastSql });
+  if (r.error) {
+    $("#modal-body").innerHTML = `<div class="error">${r.error}</div>`;
+    return;
+  }
+  const max = Math.max(...r.top_values.map(([, c]) => c), 1);
+  const rows = r.top_values.map(([label, count]) => `
+    <div class="row">
+      <span style="flex:0 0 200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(label)}</span>
+      <span class="bar"><div style="width:${(count/max*100).toFixed(1)}%"></div></span>
+      <span class="v">${count}</span>
+    </div>
+  `).join("");
+  $("#modal-body").innerHTML = `<div class="col-stats">
+    <div style="color:var(--dim); margin-bottom:6px;">distinct: ${r.distinct ?? "?"} · top 25 values${state.lastSql ? " (in current query)" : ""}</div>
+    ${rows}
+  </div>`;
+}
+
+function openJsonModal(col, val) {
+  let parsed = val;
+  if (typeof val === "string") { try { parsed = JSON.parse(val); } catch (e) {} }
+  const pretty = typeof parsed === "object" ? JSON.stringify(parsed, null, 2) : String(parsed);
+  showModal(`Cell · ${col}`, `<pre>${escapeHtml(pretty)}</pre>`);
+}
+
+function showModal(title, html) {
+  $("#modal-title").textContent = title;
+  $("#modal-body").innerHTML = html;
+  $("#modal-bg").classList.add("show");
+}
+function escapeHtml(s) {
+  return String(s).replace(/[<>&"]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;","\"":"&quot;"}[c]));
+}
+
+document.addEventListener("click", (e) => {
+  if (e.target.id === "modal-close" || e.target.id === "modal-bg") {
+    $("#modal-bg").classList.remove("show");
+  }
+});
+
+async function exportAs(fmt) {
+  const sql = $("#sql").value;
+  const r = await fetch("/api/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sql, format: fmt }),
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    alert("Export failed: " + (j.error || r.statusText));
+    return;
+  }
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `logq-export.${fmt === "parquet" ? "parquet" : fmt}`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+$("#export-csv").addEventListener("click", () => exportAs("csv"));
+$("#export-parquet").addEventListener("click", () => exportAs("parquet"));
 
 function renderChart(r, kind) {
   if (r.columns.length < 2 || r.rows.length === 0) {

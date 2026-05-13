@@ -18,6 +18,9 @@ pub enum FileKind {
     JsonlZst,
     Json,
     Log,
+    Csv,
+    CsvGz,
+    Parquet,
 }
 
 impl FileKind {
@@ -28,6 +31,9 @@ impl FileKind {
             FileKind::JsonlZst => "zst-jsonl",
             FileKind::Json => "json",
             FileKind::Log => "log",
+            FileKind::Csv => "csv",
+            FileKind::CsvGz => "gz-csv",
+            FileKind::Parquet => "parquet",
         }
     }
 }
@@ -44,6 +50,12 @@ pub fn classify(path: &Path) -> Option<FileKind> {
         Some(FileKind::Json)
     } else if name.ends_with(".log") {
         Some(FileKind::Log)
+    } else if name.ends_with(".csv") || name.ends_with(".tsv") {
+        Some(FileKind::Csv)
+    } else if name.ends_with(".csv.gz") || name.ends_with(".tsv.gz") {
+        Some(FileKind::CsvGz)
+    } else if name.ends_with(".parquet") || name.ends_with(".pq") {
+        Some(FileKind::Parquet)
     } else {
         None
     }
