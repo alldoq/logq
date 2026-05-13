@@ -1,0 +1,29 @@
+[package]
+name = "logq"
+version = "0.1.0"
+edition = "2021"
+description = "Local-first JSONL log explorer powered by DuckDB"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+duckdb = { version = "1.1", features = ["bundled"] }
+axum = { version = "0.7", features = ["ws"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "cors", "trace"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+clap = { version = "4", features = ["derive"] }
+walkdir = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rust-embed = "8"
+mime_guess = "2"
+chrono = "0.4"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

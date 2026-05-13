@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>logq — local-first JSONL log explorer</title>
+<meta name="description" content="Point logq at a folder of JSONL logs. Get a local web UI with SQL, time-series histograms, and faceted search in seconds. Powered by DuckDB." />
+<style>
+:root {
+  --bg: #0e1116; --panel: #161b22; --panel2: #1c232c;
+  --fg: #e6edf3; --dim: #8b949e; --accent: #58a6ff;
+  --ok: #3fb950; --warn: #d29922; --err: #ff7b72; --border: #30363d;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 16px; line-height: 1.55; }
+.wrap { max-width: 880px; margin: 0 auto; padding: 64px 24px; }
+header { text-align: center; margin-bottom: 64px; }
+h1 { font-size: 56px; margin: 0; letter-spacing: -1px; }
+.tag { color: var(--dim); font-size: 18px; margin-top: 8px; }
+.pill { display: inline-block; padding: 4px 10px; border-radius: 999px;
+  background: var(--panel2); border: 1px solid var(--border);
+  color: var(--accent); font-size: 12px; font-family: var(--mono);
+  margin-top: 16px; }
+.cta { margin-top: 32px; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.btn { padding: 10px 18px; border-radius: 6px; text-decoration: none;
+  font-weight: 600; font-size: 14px; display: inline-block; }
+.btn.primary { background: var(--accent); color: #0b0f14; }
+.btn.secondary { background: var(--panel2); color: var(--fg); border: 1px solid var(--border); }
+.btn:hover { filter: brightness(1.12); }
+
+h2 { font-size: 24px; margin: 56px 0 16px; letter-spacing: -0.3px; }
+p { color: #c9d1d9; }
+code, pre { font-family: var(--mono); }
+code { background: var(--panel2); padding: 2px 6px; border-radius: 4px;
+  font-size: 13px; color: var(--accent); }
+pre { background: var(--panel); border: 1px solid var(--border);
+  padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 13px; }
+pre code { background: transparent; padding: 0; color: var(--fg); }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px; margin-top: 24px; }
+.card { background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; padding: 18px; }
+.card h3 { margin: 0 0 6px; font-size: 15px; color: var(--accent); }
+.card p { margin: 0; font-size: 14px; color: var(--dim); }
+
+table { border-collapse: collapse; width: 100%; margin-top: 16px;
+  font-size: 14px; }
+th, td { padding: 10px 12px; text-align: left;
+  border-bottom: 1px solid var(--border); }
+th { background: var(--panel); color: var(--dim); font-weight: 600; font-size: 13px; }
+
+.terminal { background: #07090c; border: 1px solid var(--border);
+  border-radius: 8px; padding: 14px 16px; font-family: var(--mono);
+  font-size: 13px; line-height: 1.5; }
+.terminal .pr { color: var(--ok); }
+.terminal .arrow { color: var(--dim); }
+.terminal .url { color: var(--accent); }
+
+footer { text-align: center; color: var(--dim); margin-top: 80px;
+  padding: 24px 0; border-top: 1px solid var(--border); font-size: 13px; }
+footer a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>logq</h1>
+  <div class="tag">A local-first, single-binary log explorer.<br>
+    Point it at a folder of JSONL files — get SQL, histograms, and faceted search in seconds.</div>
+  <div class="pill">v0.1 · DuckDB-powered · MIT/Apache-2.0</div>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/alldoq/logq">View on GitHub →</a>
+    <a class="btn secondary" href="https://github.com/alldoq/logq/releases">Download</a>
+  </div>
+</header>
+
+<h2>The problem</h2>
+<p>When production breaks, your options are: <code>ssh + tail + jq</code> (slow, error-prone),
+ship logs to a SaaS (expensive, slow to set up), or stand up Loki/Elastic
+(ops-heavy overkill). There's no good middle option for
+<em>"I have a folder of JSONL files, I want to explore them right now, locally,
+with real query power."</em></p>
+
+<h2>30-second demo</h2>
+<div class="terminal">
+<span class="pr">$</span> logq ./var/log<br>
+<span class="arrow">→</span> Scanning ./var/log... found 14 files (3.2 GB)<br>
+<span class="arrow">→</span> Detected: jsonl (12 files), gz-jsonl (2 files)<br>
+<span class="arrow">→</span> Inferred timestamp column: "ts"<br>
+<span class="arrow">→</span> Inferred level column: "level"<br>
+<span class="arrow">→</span> <span class="url">http://localhost:7777</span>
+</div>
+<p>Browser opens. You see a timestamp histogram, facet panel (auto-detected
+low-cardinality fields like <code>level</code> / <code>service</code> / <code>host</code>),
+results table, and a SQL editor pre-filled with a sensible default.</p>
+
+<h2>The five-property bar</h2>
+<table>
+  <thead><tr><th>Property</th><th>Why it matters</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Local-first</strong></td><td>No SaaS, no account, runs fully offline / air-gapped</td></tr>
+    <tr><td><strong>File-native</strong></td><td>Queries <code>.jsonl</code> / <code>.json.gz</code> directly — no ingestion</td></tr>
+    <tr><td><strong>JSON-log-aware</strong></td><td>Auto-infers schema, nested fields, timestamps, levels</td></tr>
+    <tr><td><strong>SQL-powered</strong></td><td>Full DuckDB SQL — joins, window functions, aggregations</td></tr>
+    <tr><td><strong>Real web UI</strong></td><td>Browser, not TUI. Shareable URLs, charts, faceted search</td></tr>
+  </tbody>
+</table>
+<p>No existing tool combines all five. DuckDB UI isn't log-shaped. Tailpipe
+requires ingestion. lnav is terminal-only. Logdy has no SQL.</p>
+
+<h2>Quickstart</h2>
+<pre><code>git clone https://github.com/alldoq/logq.git
+cd logq
+cargo build --release
+./target/release/logq ./sample-data</code></pre>
+
+<h2>Killer features</h2>
+<div class="grid">
+  <div class="card">
+    <h3>Cross-file joins</h3>
+    <p><code>SELECT * FROM 'app/*.jsonl' a JOIN 'nginx/*.jsonl' n ON a.request_id = n.request_id</code>.
+      No pipeline.</p>
+  </div>
+  <div class="card">
+    <h3>Auto-schema</h3>
+    <p>Run DuckDB's <code>read_json_auto</code> over your files. Timestamps,
+      levels, and trace IDs detected automatically.</p>
+  </div>
+  <div class="card">
+    <h3>Faceted search</h3>
+    <p>Low-cardinality fields surface as click-to-filter facets.
+      One click to scope your query.</p>
+  </div>
+  <div class="card">
+    <h3>Saved queries</h3>
+    <p>Saves to <code>.logq/queries.yml</code> in the directory.
+      Git-friendly, shareable with your teammates.</p>
+  </div>
+  <div class="card">
+    <h3>Single binary</h3>
+    <p>Bundles DuckDB and the web UI. No daemons, no dependencies,
+      no system DuckDB needed.</p>
+  </div>
+  <div class="card">
+    <h3>Fast</h3>
+    <p>Aggregations across 460k rows / 150 MB of JSONL in ~200 ms
+      on a laptop. The disk is the database.</p>
+  </div>
+</div>
+
+<h2>Status</h2>
+<p>v0.1 MVP — open to revision once it's in real hands. Coming next:
+live tail, remote tail over SSH, column-type overrides, hardening for 100 GB+ datasets.</p>
+
+<footer>
+  <a href="https://github.com/alldoq/logq">GitHub</a> · MIT OR Apache-2.0
+</footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,5 @@
+/target
+/.logq
+sample-data/.logq
+*.swp
+.DS_Store
