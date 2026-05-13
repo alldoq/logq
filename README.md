@@ -2,6 +2,8 @@
 
 Local-first JSONL log explorer. Point at a folder, get a web UI with SQL, histograms, facets. Powered by DuckDB.
 
+**Site:** https://alldoq.github.io/logq/ · **Releases:** https://github.com/alldoq/logq/releases
+
 ## Build
 
 ```bash
