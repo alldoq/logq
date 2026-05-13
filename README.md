@@ -23,6 +23,22 @@ Flags:
 - `--port <N>` — port (default `7777`)
 - `--host <H>` — bind (default `127.0.0.1`)
 - `--no-open` — don't auto-launch browser
+- `--tail` — start the live-tail watcher at startup
+
+UI features:
+- **Live tail** — toggle button streams newly appended lines via WebSocket.
+- **Chart toggle** — switch any GROUP BY result between table/bar/line.
+- **Copy link** — encodes the current SQL + view into the URL hash for sharing.
+- **Schema overrides** — drop a `.logq/schema.yml` in the target dir to coerce columns:
+
+  ```yaml
+  columns:
+    ts:
+      type: TIMESTAMP
+      format: "%Y-%m-%dT%H:%M:%S%z"   # optional strptime fmt
+    dur_ms:
+      type: DOUBLE
+  ```
 
 ## What it does
 
@@ -36,7 +52,7 @@ Flags:
 
 ## Status
 
-v0.1 MVP per `logq-spec.md` §12. Not yet implemented: live tail, gzip beyond DuckDB's native support, remote tail over SSH, column-type overrides, schema overrides via `.logq/schema.yml`.
+v0.1 MVP per `logq-spec.md` §12 plus several v0.5 items (live tail, chart toggle, URL state, schema overrides). Not yet implemented: remote tail over SSH, `.zst` support, Homebrew formula.
 
 ## License
 

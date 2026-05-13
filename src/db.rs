@@ -1,10 +1,37 @@
 use anyhow::{anyhow, Result};
 use duckdb::types::{TimeUnit, ValueRef};
 use duckdb::{params, Connection};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 pub struct Db {
     pub conn: Connection,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SchemaOverride {
+    /// e.g. "TIMESTAMP", "BIGINT", "VARCHAR", "DOUBLE"
+    pub r#type: String,
+    /// optional strftime format for TIMESTAMP parse (passed to strptime)
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct SchemaConfig {
+    /// map column name -> override
+    #[serde(default)]
+    pub columns: HashMap<String, SchemaOverride>,
+}
+
+pub fn load_schema_config(dir: &std::path::Path) -> SchemaConfig {
+    let p = dir.join(".logq").join("schema.yml");
+    if !p.exists() { return SchemaConfig::default(); }
+    match std::fs::read_to_string(&p) {
+        Ok(s) => serde_yaml::from_str(&s).unwrap_or_default(),
+        Err(_) => SchemaConfig::default(),
+    }
 }
 
 impl Db {
@@ -13,12 +40,15 @@ impl Db {
         Ok(Self { conn })
     }
 
-    /// Register a `logs` view over the given files.
-    pub fn register_logs_view(&self, files: &[std::path::PathBuf]) -> Result<()> {
+    /// Register a `logs` view over the given files, applying optional schema overrides.
+    pub fn register_logs_view(&self, files: &[std::path::PathBuf], schema: &SchemaConfig) -> Result<()> {
         if files.is_empty() {
-            // Empty placeholder view so DESCRIBE doesn't crash.
             self.conn.execute(
-                "CREATE OR REPLACE VIEW logs AS SELECT NULL::VARCHAR AS msg WHERE FALSE",
+                "CREATE OR REPLACE VIEW logs_raw AS SELECT NULL::VARCHAR AS msg WHERE FALSE",
+                params![],
+            )?;
+            self.conn.execute(
+                "CREATE OR REPLACE VIEW logs AS SELECT * FROM logs_raw",
                 params![],
             )?;
             return Ok(());
@@ -28,8 +58,8 @@ impl Db {
             .map(|p| format!("'{}'", p.to_string_lossy().replace('\'', "''")))
             .collect::<Vec<_>>()
             .join(", ");
-        let sql = format!(
-            "CREATE OR REPLACE VIEW logs AS \
+        let raw_sql = format!(
+            "CREATE OR REPLACE VIEW logs_raw AS \
              SELECT * FROM read_json_auto([{}], \
                  union_by_name=true, \
                  ignore_errors=true, \
@@ -37,7 +67,47 @@ impl Db {
                  filename=true)",
             list
         );
-        self.conn.execute(&sql, params![])?;
+        self.conn.execute(&raw_sql, params![])?;
+
+        // Get raw columns to build override projection
+        let raw_cols = {
+            let mut stmt = self.conn.prepare("DESCRIBE logs_raw")?;
+            let rows = stmt.query_map([], |row| {
+                let n: String = row.get(0)?;
+                let t: String = row.get(1)?;
+                Ok((n, t))
+            })?;
+            let mut out = Vec::new();
+            for r in rows { out.push(r?); }
+            out
+        };
+
+        let projection: Vec<String> = raw_cols.iter().map(|(name, _orig_type)| {
+            let q = name.replace('"', "\"\"");
+            match schema.columns.get(name) {
+                Some(ov) => {
+                    let tgt = ov.r#type.to_uppercase();
+                    if tgt == "TIMESTAMP" {
+                        match &ov.format {
+                            Some(fmt) => {
+                                let fmt_esc = fmt.replace('\'', "''");
+                                format!("strptime(CAST(\"{q}\" AS VARCHAR), '{fmt_esc}') AS \"{q}\"")
+                            }
+                            None => format!("TRY_CAST(\"{q}\" AS TIMESTAMP) AS \"{q}\""),
+                        }
+                    } else {
+                        format!("TRY_CAST(\"{q}\" AS {tgt}) AS \"{q}\"")
+                    }
+                }
+                None => format!("\"{q}\""),
+            }
+        }).collect();
+
+        let view_sql = format!(
+            "CREATE OR REPLACE VIEW logs AS SELECT {} FROM logs_raw",
+            if projection.is_empty() { "*".to_string() } else { projection.join(", ") }
+        );
+        self.conn.execute(&view_sql, params![])?;
         Ok(())
     }
 

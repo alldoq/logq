@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Live tail: WebSocket stream of newly appended lines (`--tail` flag or UI toggle).
+- Chart toggle: bar / line / table view for any GROUP BY result.
+- Copy-link button encodes SQL + view in URL hash for shareable views.
+- Schema overrides via `.logq/schema.yml` — coerce columns to TIMESTAMP / BIGINT / DOUBLE etc.
+
 ## v0.1.0 — 2026-05-13
 
 First release. Weekend MVP per `logq-spec.md` §12.

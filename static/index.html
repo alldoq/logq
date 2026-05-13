@@ -64,6 +64,13 @@ button:hover { filter: brightness(1.1); }
 .json-cell { color: var(--warn); }
 .num-cell { color: var(--ok); }
 .null-cell { color: var(--dim); font-style: italic; }
+.chart-toggle button { font-family: var(--mono); font-size: 11px; padding: 4px 8px; }
+.chart-toggle button.active { background: var(--accent); color: #0b0f14; border-color: var(--accent); }
+.tail-row { padding: 4px 12px; border-bottom: 1px solid #1f262e; font-family: var(--mono); font-size: 11px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tail-row .file { color: var(--dim); margin-right: 6px; }
+#tail-toggle.on { background: var(--ok); color: #0b0f14; border-color: var(--ok); }
+.chart-svg { width: 100%; height: 100%; }
 </style>
 </head>
 <body>
@@ -88,7 +95,14 @@ button:hover { filter: brightness(1.1); }
       <div class="row">
         <button id="run">Run (⌘↵)</button>
         <button class="secondary" id="save">Save…</button>
+        <button class="secondary" id="copy-link">Copy link</button>
+        <button class="secondary" id="tail-toggle">Live tail: off</button>
         <span class="status" id="status"></span>
+        <span style="margin-left:auto" class="chart-toggle">
+          <button class="secondary" data-view="table">Table</button>
+          <button class="secondary" data-view="bar">Bar</button>
+          <button class="secondary" data-view="line">Line</button>
+        </span>
       </div>
     </div>
     <div class="histogram"><svg id="hist"></svg></div>
@@ -98,12 +112,14 @@ button:hover { filter: brightness(1.1); }
   <div class="panel" id="right">
     <h2>Saved Queries</h2>
     <div id="saved"></div>
+    <h2>Live Tail</h2>
+    <div id="tail"></div>
   </div>
 </div>
 
 <script>
 const $ = (s) => document.querySelector(s);
-const state = { meta: null, lastSql: "" };
+const state = { meta: null, lastSql: "", lastResult: null, view: "table", tailWs: null };
 
 async function api(path, body) {
   const opts = { method: body ? "POST" : "GET", headers: { "Content-Type": "application/json" } };
@@ -143,11 +159,19 @@ function renderMeta(m) {
     });
   });
 
-  if (m.timestamp_col) {
+  const urlState = loadUrlState();
+  if (urlState && urlState.sql) {
+    $("#sql").value = urlState.sql;
+    if (urlState.view) {
+      state.view = urlState.view;
+      document.querySelectorAll(".chart-toggle button").forEach(x => x.classList.toggle("active", x.dataset.view === state.view));
+    }
+  } else if (m.timestamp_col) {
     $("#sql").value = `SELECT * FROM logs ORDER BY "${m.timestamp_col}" DESC LIMIT 100`;
   } else {
     $("#sql").value = "SELECT * FROM logs LIMIT 100";
   }
+  document.querySelectorAll(".chart-toggle button").forEach(x => x.classList.toggle("active", x.dataset.view === state.view));
 
   loadFacets(m.facets);
   loadHistogram();
@@ -203,6 +227,7 @@ function cellHtml(v) {
 async function runQuery() {
   const sql = $("#sql").value;
   state.lastSql = sql;
+  syncUrl();
   $("#status").textContent = "running...";
   const r = await api("/api/query", { sql });
   if (r.error) {
@@ -210,7 +235,19 @@ async function runQuery() {
     $("#status").textContent = `error · ${r.elapsed_ms}ms`;
     return;
   }
+  state.lastResult = r;
   $("#status").textContent = `${r.rows.length} rows · ${r.elapsed_ms}ms`;
+  renderView();
+}
+
+function renderView() {
+  const r = state.lastResult;
+  if (!r) return;
+  if (state.view === "table") return renderTable(r);
+  return renderChart(r, state.view);
+}
+
+function renderTable(r) {
   const thead = "<tr>" + r.columns.map(c => `<th>${c}</th>`).join("") + "</tr>";
   const tbody = r.rows.map(row =>
     "<tr>" + row.map(c => `<td title="${typeof c === 'object' ? JSON.stringify(c).replace(/"/g,'&quot;') : String(c ?? '').replace(/"/g,'&quot;')}">${cellHtml(c)}</td>`).join("") + "</tr>"
@@ -220,6 +257,119 @@ async function runQuery() {
     td.addEventListener("click", () => td.classList.toggle("expand"));
   });
 }
+
+function renderChart(r, kind) {
+  if (r.columns.length < 2 || r.rows.length === 0) {
+    $("#results").innerHTML = `<div class="error">Chart needs ≥2 columns and rows. Try a GROUP BY query.</div>`;
+    return;
+  }
+  // Last numeric col is Y; first col is X.
+  const yIdx = r.columns.length - 1;
+  const xIdx = 0;
+  const vals = r.rows.map(row => Number(row[yIdx]) || 0);
+  const labels = r.rows.map(row => String(row[xIdx] ?? ""));
+  const max = Math.max(...vals, 1);
+  const w = 1000, h = 360, padL = 60, padB = 40, padT = 16, padR = 16;
+  const innerW = w - padL - padR, innerH = h - padT - padB;
+  const n = vals.length;
+  let body;
+  if (kind === "bar") {
+    const bw = innerW / n;
+    body = vals.map((v, i) => {
+      const bh = (v / max) * innerH;
+      const x = padL + i * bw, y = padT + innerH - bh;
+      return `<rect x="${x+1}" y="${y}" width="${Math.max(1, bw-2)}" height="${bh}" fill="#58a6ff" opacity="0.8">
+        <title>${labels[i]}: ${v}</title></rect>`;
+    }).join("");
+  } else {
+    const sx = (i) => padL + (n === 1 ? innerW/2 : (i * innerW) / (n - 1));
+    const sy = (v) => padT + innerH - (v / max) * innerH;
+    const pts = vals.map((v, i) => `${sx(i)},${sy(v)}`).join(" ");
+    body = `<polyline fill="none" stroke="#58a6ff" stroke-width="2" points="${pts}" />` +
+      vals.map((v, i) => `<circle cx="${sx(i)}" cy="${sy(v)}" r="3" fill="#58a6ff"><title>${labels[i]}: ${v}</title></circle>`).join("");
+  }
+  // Axes
+  const axes = `
+    <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT+innerH}" stroke="#30363d" />
+    <line x1="${padL}" y1="${padT+innerH}" x2="${padL+innerW}" y2="${padT+innerH}" stroke="#30363d" />
+    <text x="${padL-6}" y="${padT+10}" fill="#8b949e" font-size="10" text-anchor="end">${max}</text>
+    <text x="${padL-6}" y="${padT+innerH}" fill="#8b949e" font-size="10" text-anchor="end">0</text>
+    <text x="${padL}" y="${padT+innerH+14}" fill="#8b949e" font-size="10">${labels[0]}</text>
+    <text x="${padL+innerW}" y="${padT+innerH+14}" fill="#8b949e" font-size="10" text-anchor="end">${labels[n-1]}</text>
+    <text x="${padL}" y="${padT-4}" fill="#8b949e" font-size="11">${r.columns[xIdx]} → ${r.columns[yIdx]}</text>
+  `;
+  $("#results").innerHTML = `<svg class="chart-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${axes}${body}</svg>`;
+}
+
+function syncUrl() {
+  try {
+    const payload = { sql: state.lastSql, view: state.view };
+    const enc = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+    history.replaceState(null, "", "#q=" + enc);
+  } catch (e) {}
+}
+
+function loadUrlState() {
+  const h = location.hash;
+  if (!h.startsWith("#q=")) return null;
+  try {
+    const json = decodeURIComponent(escape(atob(h.slice(3))));
+    return JSON.parse(json);
+  } catch (e) { return null; }
+}
+
+document.querySelectorAll(".chart-toggle button").forEach(b => {
+  b.addEventListener("click", () => {
+    state.view = b.dataset.view;
+    document.querySelectorAll(".chart-toggle button").forEach(x => x.classList.toggle("active", x === b));
+    syncUrl();
+    renderView();
+  });
+});
+
+$("#copy-link").addEventListener("click", async () => {
+  syncUrl();
+  await navigator.clipboard.writeText(location.href);
+  const old = $("#copy-link").textContent;
+  $("#copy-link").textContent = "Copied!";
+  setTimeout(() => $("#copy-link").textContent = old, 1200);
+});
+
+$("#tail-toggle").addEventListener("click", async () => {
+  const btn = $("#tail-toggle");
+  if (state.tailWs) {
+    state.tailWs.close();
+    state.tailWs = null;
+    btn.classList.remove("on");
+    btn.textContent = "Live tail: off";
+    return;
+  }
+  await fetch("/api/tail/start", { method: "POST" });
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${proto}//${location.host}/api/tail`);
+  state.tailWs = ws;
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      const div = document.createElement("div");
+      div.className = "tail-row";
+      const file = msg.file.split("/").pop();
+      div.innerHTML = `<span class="file">${file}</span>${(msg.line||"").slice(0,300).replace(/[<>&]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]))}`;
+      const tail = $("#tail");
+      tail.insertBefore(div, tail.firstChild);
+      while (tail.children.length > 200) tail.removeChild(tail.lastChild);
+    } catch (err) {}
+  };
+  ws.onclose = () => {
+    if (state.tailWs === ws) {
+      state.tailWs = null;
+      btn.classList.remove("on");
+      btn.textContent = "Live tail: off";
+    }
+  };
+  btn.classList.add("on");
+  btn.textContent = "Live tail: on";
+});
 
 async function loadSaved() {
   const r = await api("/api/saved");

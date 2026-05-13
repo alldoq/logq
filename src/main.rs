@@ -2,6 +2,7 @@ mod scan;
 mod db;
 mod server;
 mod saved;
+mod tail;
 
 use anyhow::Result;
 use clap::Parser;
@@ -25,6 +26,10 @@ struct Cli {
     /// Open browser automatically
     #[arg(long, default_value_t = false)]
     no_open: bool,
+
+    /// Auto-start live tail watcher
+    #[arg(long, default_value_t = false)]
+    tail: bool,
 }
 
 #[tokio::main]
@@ -56,6 +61,19 @@ async fn main() -> Result<()> {
     }
     if let Some(lvl) = &state.inferred_level_col {
         println!("→ Inferred level column: \"{}\"", lvl);
+    }
+
+    if cli.tail {
+        use std::sync::atomic::Ordering;
+        state.tail_enabled.store(true, Ordering::SeqCst);
+        let paths: Vec<std::path::PathBuf> = state.files.iter().map(|f| f.path.clone()).collect();
+        let tx = state.tail_tx.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = tail::watch(paths, tx) {
+                tracing::error!("tail watcher error: {}", e);
+            }
+        });
+        println!("→ Live tail watcher started");
     }
 
     let url = format!("http://{}:{}", cli.host, cli.port);

@@ -1,12 +1,15 @@
-use crate::db::{detect_facets, infer_level_col, infer_timestamp_col, Db, QueryResult};
+use crate::db::{detect_facets, infer_level_col, infer_timestamp_col, load_schema_config, Db, QueryResult};
+use crate::tail;
 use crate::saved::{self, SavedQueries, SavedQuery};
 use crate::scan::FileEntry;
 use anyhow::Result;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use tokio::sync::broadcast;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -24,17 +27,21 @@ pub struct AppState {
     pub inferred_level_col: Option<String>,
     pub facets: Vec<String>,
     pub columns: Vec<(String, String)>,
+    pub tail_tx: broadcast::Sender<String>,
+    pub tail_enabled: std::sync::atomic::AtomicBool,
 }
 
 impl AppState {
     pub fn new(dir: PathBuf, files: Vec<FileEntry>) -> Result<Arc<Self>> {
         let db = Db::open()?;
         let paths: Vec<std::path::PathBuf> = files.iter().map(|f| f.path.clone()).collect();
-        db.register_logs_view(&paths)?;
+        let schema = load_schema_config(&dir);
+        db.register_logs_view(&paths, &schema)?;
         let columns = db.columns().unwrap_or_default();
         let ts = infer_timestamp_col(&columns);
         let lvl = infer_level_col(&columns);
         let facets = detect_facets(&db, &columns);
+        let (tail_tx, _) = broadcast::channel::<String>(1024);
         Ok(Arc::new(Self {
             dir,
             files,
@@ -43,6 +50,8 @@ impl AppState {
             inferred_level_col: lvl,
             facets,
             columns,
+            tail_tx,
+            tail_enabled: std::sync::atomic::AtomicBool::new(false),
         }))
     }
 }
@@ -54,6 +63,8 @@ pub async fn serve(state: Arc<AppState>, host: &str, port: u16) -> Result<()> {
         .route("/api/histogram", post(histogram))
         .route("/api/saved", get(get_saved).post(post_saved))
         .route("/api/saved/delete", post(delete_saved))
+        .route("/api/tail", get(tail_ws))
+        .route("/api/tail/start", post(tail_start))
         .fallback(static_handler)
         .with_state(state);
 
@@ -218,6 +229,48 @@ async fn delete_saved(State(s): State<Arc<AppState>>, Json(req): Json<DelReq>) -
     match saved::save(&s.dir, &qs) {
         Ok(_) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))),
+    }
+}
+
+async fn tail_start(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    use std::sync::atomic::Ordering;
+    if s.tail_enabled.swap(true, Ordering::SeqCst) {
+        return Json(serde_json::json!({"already": true}));
+    }
+    let paths: Vec<PathBuf> = s.files.iter().map(|f| f.path.clone()).collect();
+    let tx = s.tail_tx.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = tail::watch(paths, tx) {
+            tracing::error!("tail watcher error: {}", e);
+        }
+    });
+    Json(serde_json::json!({"started": true}))
+}
+
+async fn tail_ws(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> Response {
+    ws.on_upgrade(move |socket| handle_tail_socket(socket, s))
+}
+
+async fn handle_tail_socket(mut socket: WebSocket, s: Arc<AppState>) {
+    let mut rx = s.tail_tx.subscribe();
+    loop {
+        tokio::select! {
+            recv = rx.recv() => {
+                match recv {
+                    Ok(line) => {
+                        if socket.send(Message::Text(line)).await.is_err() { break; }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                }
+            }
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(_)) => {},
+                    _ => break,
+                }
+            }
+        }
     }
 }
 
