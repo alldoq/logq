@@ -61,7 +61,8 @@ UI features:
 
 ## What it does
 
-- Scans the directory for JSONL (`.jsonl`, `.ndjson`, `.json.gz`, `.jsonl.zst`, etc.), CSV/TSV (including `.csv.gz`), and Parquet. All inputs are UNION'd by name into one `logs` view.
+- Scans the directory for JSONL (`.jsonl`, `.ndjson`, `.json.gz`, `.jsonl.zst`, etc.), CSV/TSV (including `.csv.gz`), Parquet, and plain text (`.log`, `.txt`, `.out`, `.log.gz`). All inputs are UNION'd by name into one `logs` view.
+- For plain-text files, each line is exposed as `msg` (VARCHAR), with a best-effort regex extraction of a leading ISO8601 `ts` and a `level` token (`INFO`, `WARN`, `ERROR`, `DEBUG`, `TRACE`, `FATAL`, etc.). Unparseable lines keep `ts`/`level` NULL and the full line in `msg`.
 - Registers the view via DuckDB `read_json_auto` / `read_csv_auto` / `read_parquet` (union schema, ignore errors).
 - Infers the timestamp column (`ts`, `timestamp`, `time`, `@timestamp`, or any TIMESTAMP-typed column).
 - Infers the level column (`level`, `severity`, etc.).

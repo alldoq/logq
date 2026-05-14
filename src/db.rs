@@ -47,9 +47,10 @@ impl Db {
         json_files: &[std::path::PathBuf],
         csv_files: &[std::path::PathBuf],
         parquet_files: &[std::path::PathBuf],
+        text_files: &[std::path::PathBuf],
         schema: &SchemaConfig,
     ) -> Result<()> {
-        if json_files.is_empty() && csv_files.is_empty() && parquet_files.is_empty() {
+        if json_files.is_empty() && csv_files.is_empty() && parquet_files.is_empty() && text_files.is_empty() {
             self.conn.execute(
                 "CREATE OR REPLACE VIEW logs_raw AS SELECT NULL::VARCHAR AS msg WHERE FALSE",
                 params![],
@@ -88,6 +89,27 @@ impl Db {
             parts.push(format!(
                 "SELECT * FROM read_parquet([{}], union_by_name=true, filename=true)",
                 fmt_list(parquet_files)
+            ));
+        }
+        if !text_files.is_empty() {
+            // Read each file as a single VARCHAR column named `raw` (one row per line).
+            // A delimiter that never appears + skip header off ensures the line is the row.
+            // Then try to peel off a leading ISO8601 timestamp and a level token so users
+            // can filter by `ts` / `level` without hand-writing regex every time.
+            parts.push(format!(
+                "WITH t AS (\
+                     SELECT column0 AS raw, filename FROM read_csv([{}], \
+                         columns={{'column0':'VARCHAR'}}, \
+                         delim='\\x1F', quote='', escape='', header=false, \
+                         filename=true, ignore_errors=true) \
+                 ) \
+                 SELECT \
+                   TRY_CAST(regexp_extract(raw, '([0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}[T ][0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}}(?:\\.[0-9]+)?(?:Z|[+-][0-9:]+)?)', 1) AS TIMESTAMP) AS ts, \
+                   NULLIF(regexp_extract(raw, '\\b(TRACE|DEBUG|INFO|WARN(?:ING)?|ERROR|FATAL|CRIT(?:ICAL)?)\\b', 1), '') AS level, \
+                   raw AS msg, \
+                   filename \
+                 FROM t",
+                fmt_list(text_files)
             ));
         }
         let body = if parts.len() == 1 {

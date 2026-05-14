@@ -2,6 +2,9 @@
 
 ## v0.1.3 (2026-05-14)
 
+- Plain-text log support (`.log`, `.txt`, `.out`, `.log.gz`). Each line
+  becomes one row with `msg`, plus a best-effort regex extraction of a
+  leading ISO8601 `ts` and a `level` token.
 - HTTP API now also mounted under `/api/v1/*`, with `/api/health`.
 - Optional bearer-token auth via `--token` or `LOGQ_TOKEN`. Accepted as
   `Authorization: Bearer`, `X-Logq-Token`, or `?token=` on the WebSocket.

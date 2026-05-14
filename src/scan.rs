@@ -48,7 +48,9 @@ pub fn classify(path: &Path) -> Option<FileKind> {
         Some(FileKind::JsonlZst)
     } else if name.ends_with(".json") {
         Some(FileKind::Json)
-    } else if name.ends_with(".log") {
+    } else if name.ends_with(".log") || name.ends_with(".txt") || name.ends_with(".out") {
+        Some(FileKind::Log)
+    } else if name.ends_with(".log.gz") || name.ends_with(".txt.gz") {
         Some(FileKind::Log)
     } else if name.ends_with(".csv") || name.ends_with(".tsv") {
         Some(FileKind::Csv)

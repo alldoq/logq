@@ -46,6 +46,7 @@ impl AppState {
         let mut json_paths: Vec<std::path::PathBuf> = Vec::new();
         let mut csv_paths: Vec<std::path::PathBuf> = Vec::new();
         let mut parquet_paths: Vec<std::path::PathBuf> = Vec::new();
+        let mut text_paths: Vec<std::path::PathBuf> = Vec::new();
         for f in &files {
             let path = if f.kind == FileKind::JsonlZst {
                 if tempdir.is_none() {
@@ -61,11 +62,12 @@ impl AppState {
             match f.kind {
                 FileKind::Csv | FileKind::CsvGz => csv_paths.push(path),
                 FileKind::Parquet => parquet_paths.push(path),
+                FileKind::Log => text_paths.push(path),
                 _ => json_paths.push(path),
             }
         }
         let schema = load_schema_config(&dir);
-        db.register_logs_view(&json_paths, &csv_paths, &parquet_paths, &schema)?;
+        db.register_logs_view(&json_paths, &csv_paths, &parquet_paths, &text_paths, &schema)?;
         let columns = db.columns().unwrap_or_default();
         let ts = infer_timestamp_col(&columns);
         let lvl = infer_level_col(&columns);
