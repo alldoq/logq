@@ -33,6 +33,11 @@ The DuckDB engine is bundled (no system DuckDB needed); first build is slow.
 # http://localhost:7777
 ```
 
+Sources:
+- A directory path: walks recursively.
+- `-`: read JSONL or plain text from stdin (`kubectl logs ... | logq -`).
+- `http(s)://...` or `s3://bucket/key`: single-file remote source via DuckDB's `httpfs` extension (auto-installed on first use).
+
 Flags:
 - `--port <N>`: port (default `7777`)
 - `--host <H>`: bind address (default `127.0.0.1`)

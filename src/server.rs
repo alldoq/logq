@@ -41,6 +41,9 @@ pub struct AppState {
 impl AppState {
     pub fn new(dir: PathBuf, files: Vec<FileEntry>, token: Option<String>) -> Result<Arc<Self>> {
         let db = Db::open()?;
+        if crate::source::has_remote(&files) {
+            db.ensure_httpfs()?;
+        }
         // Decompress any .zst files to a tempdir so DuckDB can read them.
         let mut tempdir: Option<tempfile::TempDir> = None;
         let mut json_paths: Vec<std::path::PathBuf> = Vec::new();

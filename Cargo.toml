@@ -1,6 +1,6 @@
 [package]
 name = "logq"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "Local-first JSONL log explorer powered by DuckDB"
 license = "MIT OR Apache-2.0"
@@ -27,6 +27,7 @@ futures-util = "0.3"
 tokio-stream = "0.1"
 zstd = "0.13"
 tempfile = "3"
+regex = "1"
 
 [profile.release]
 lto = true

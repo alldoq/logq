@@ -40,6 +40,13 @@ impl Db {
         Ok(Self { conn })
     }
 
+    /// Load DuckDB's httpfs extension on demand so http(s)/s3 URLs work.
+    pub fn ensure_httpfs(&self) -> Result<()> {
+        self.conn.execute("INSTALL httpfs", params![]).ok();
+        self.conn.execute("LOAD httpfs", params![])?;
+        Ok(())
+    }
+
     /// Register a `logs` view over the given files, applying optional schema overrides.
     /// Files are dispatched per-kind to the right DuckDB reader, then UNION'd via union_by_name.
     pub fn register_logs_view(
@@ -92,25 +99,16 @@ impl Db {
             ));
         }
         if !text_files.is_empty() {
-            // Read each file as a single VARCHAR column named `raw` (one row per line).
-            // A delimiter that never appears + skip header off ensures the line is the row.
-            // Then try to peel off a leading ISO8601 timestamp and a level token so users
-            // can filter by `ts` / `level` without hand-writing regex every time.
-            parts.push(format!(
-                "WITH t AS (\
-                     SELECT column0 AS raw, filename FROM read_csv([{}], \
-                         columns={{'column0':'VARCHAR'}}, \
-                         delim='\\x1F', quote='', escape='', header=false, \
-                         filename=true, ignore_errors=true) \
-                 ) \
-                 SELECT \
-                   TRY_CAST(regexp_extract(raw, '([0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}[T ][0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}}(?:\\.[0-9]+)?(?:Z|[+-][0-9:]+)?)', 1) AS TIMESTAMP) AS ts, \
-                   NULLIF(regexp_extract(raw, '\\b(TRACE|DEBUG|INFO|WARN(?:ING)?|ERROR|FATAL|CRIT(?:ICAL)?)\\b', 1), '') AS level, \
-                   raw AS msg, \
-                   filename \
-                 FROM t",
-                fmt_list(text_files)
-            ));
+            // Group text files by detected format so each gets the right projection.
+            let mut by_fmt: std::collections::HashMap<TextFormat, Vec<std::path::PathBuf>> =
+                std::collections::HashMap::new();
+            for p in text_files {
+                let fmt = sniff_text_format(p).unwrap_or(TextFormat::Generic);
+                by_fmt.entry(fmt).or_default().push(p.clone());
+            }
+            for (fmt, files) in by_fmt {
+                parts.push(text_projection_sql(&fmt, &fmt_list(&files)));
+            }
         }
         let body = if parts.len() == 1 {
             parts.pop().unwrap()
@@ -301,6 +299,118 @@ pub fn detect_facets(db: &Db, cols: &[(String, String)]) -> Vec<String> {
         }
     }
     facets
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TextFormat {
+    NginxCombined,
+    Syslog5424,
+    Syslog3164,
+    Generic,
+}
+
+pub fn sniff_text_format(path: &std::path::Path) -> Option<TextFormat> {
+    use std::io::{BufRead, BufReader};
+    use std::sync::OnceLock;
+    static NGINX: OnceLock<regex::Regex> = OnceLock::new();
+    let nginx = NGINX.get_or_init(|| {
+        regex::Regex::new(r#"^\S+ \S+ \S+ \[[^\]]+\] ""#).unwrap()
+    });
+    let f = std::fs::File::open(path).ok()?;
+    let mut r = BufReader::new(f);
+    for _ in 0..3 {
+        let mut line = String::new();
+        if r.read_line(&mut line).ok()? == 0 { break; }
+        let t = line.trim();
+        if t.is_empty() { continue; }
+        if nginx.is_match(t) {
+            return Some(TextFormat::NginxCombined);
+        }
+        // syslog RFC5424: `<pri>VERSION TS HOST APP PID MSGID ...`
+        if t.starts_with('<') && t.contains('>') {
+            // RFC5424 has a digit immediately after `>` (version), 3164 has month name.
+            if let Some(rest) = t.split_once('>').map(|x| x.1) {
+                let head = rest.trim_start();
+                if head.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                    return Some(TextFormat::Syslog5424);
+                }
+                if head.starts_with("Jan ") || head.starts_with("Feb ") || head.starts_with("Mar ")
+                    || head.starts_with("Apr ") || head.starts_with("May ") || head.starts_with("Jun ")
+                    || head.starts_with("Jul ") || head.starts_with("Aug ") || head.starts_with("Sep ")
+                    || head.starts_with("Oct ") || head.starts_with("Nov ") || head.starts_with("Dec ") {
+                    return Some(TextFormat::Syslog3164);
+                }
+            }
+        }
+        // bare RFC3164: `Mar  1 12:00:00 host proc[123]: msg`
+        if t.len() > 16 {
+            let head = &t[..3];
+            const MONTHS: [&str; 12] = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+            if MONTHS.contains(&head) {
+                return Some(TextFormat::Syslog3164);
+            }
+        }
+        return Some(TextFormat::Generic);
+    }
+    Some(TextFormat::Generic)
+}
+
+fn text_projection_sql(fmt: &TextFormat, file_list: &str) -> String {
+    let base = format!(
+        "SELECT column0 AS raw, filename FROM read_csv([{files}], \
+             columns={{'column0':'VARCHAR'}}, \
+             delim='\\x1F', quote='', escape='', header=false, \
+             filename=true, ignore_errors=true)",
+        files = file_list
+    );
+    match fmt {
+        TextFormat::NginxCombined => format!(
+            "WITH t AS ({base}) \
+             SELECT \
+               TRY_CAST(strptime(regexp_extract(raw, '\\[([^\\]]+)\\]', 1), '%d/%b/%Y:%H:%M:%S %z') AS TIMESTAMP) AS ts, \
+               NULL::VARCHAR AS level, \
+               regexp_extract(raw, '^([0-9.:a-fA-F]+)', 1) AS remote_addr, \
+               regexp_extract(raw, '\"([A-Z]+) ([^\" ]+) [^\"]+\" ', 1) AS method, \
+               regexp_extract(raw, '\"[A-Z]+ ([^\" ]+) [^\"]+\" ', 1) AS path, \
+               TRY_CAST(regexp_extract(raw, '\" ([0-9]+) ', 1) AS INTEGER) AS status, \
+               TRY_CAST(regexp_extract(raw, '\" [0-9]+ ([0-9]+)', 1) AS BIGINT) AS bytes, \
+               raw AS msg, \
+               filename \
+             FROM t"
+        ),
+        TextFormat::Syslog5424 => format!(
+            "WITH t AS ({base}) \
+             SELECT \
+               TRY_CAST(regexp_extract(raw, '^<[0-9]+>[0-9]+ (\\S+)', 1) AS TIMESTAMP) AS ts, \
+               NULL::VARCHAR AS level, \
+               regexp_extract(raw, '^<[0-9]+>[0-9]+ \\S+ (\\S+)', 1) AS host, \
+               regexp_extract(raw, '^<[0-9]+>[0-9]+ \\S+ \\S+ (\\S+)', 1) AS app, \
+               TRY_CAST(regexp_extract(raw, '^<[0-9]+>[0-9]+ \\S+ \\S+ \\S+ (\\S+)', 1) AS BIGINT) AS pid, \
+               raw AS msg, \
+               filename \
+             FROM t"
+        ),
+        TextFormat::Syslog3164 => format!(
+            "WITH t AS ({base}) \
+             SELECT \
+               TRY_CAST(strptime(regexp_extract(raw, '^(?:<[0-9]+>)?([A-Z][a-z]{{2}}\\s+[0-9]+ [0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}})', 1), '%b %e %H:%M:%S') AS TIMESTAMP) AS ts, \
+               NULL::VARCHAR AS level, \
+               regexp_extract(raw, '^(?:<[0-9]+>)?[A-Z][a-z]{{2}}\\s+[0-9]+ [0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}} (\\S+)', 1) AS host, \
+               regexp_extract(raw, '^(?:<[0-9]+>)?[A-Z][a-z]{{2}}\\s+[0-9]+ [0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}} \\S+ ([^:\\[]+)', 1) AS app, \
+               raw AS msg, \
+               filename \
+             FROM t"
+        ),
+        TextFormat::Generic => format!(
+            "WITH t AS ({base}) \
+             SELECT \
+               TRY_CAST(regexp_extract(raw, '([0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}[T ][0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}}(?:\\.[0-9]+)?(?:Z|[+-][0-9:]+)?)', 1) AS TIMESTAMP) AS ts, \
+               NULLIF(regexp_extract(raw, '\\b(TRACE|DEBUG|INFO|WARN(?:ING)?|ERROR|FATAL|CRIT(?:ICAL)?)\\b', 1), '') AS level, \
+               raw AS msg, \
+               filename \
+             FROM t"
+        ),
+    }
 }
 
 #[allow(dead_code)]

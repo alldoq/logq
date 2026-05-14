@@ -5,17 +5,17 @@ mod saved;
 mod tail;
 mod zst;
 mod remote;
+mod source;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(name = "logq", version, about = "Local-first JSONL log explorer powered by DuckDB")]
 struct Cli {
-    /// Directory containing JSONL/JSON.gz/log files
+    /// Source: directory path, `-` for stdin, or an http(s)/s3 URL
     #[arg(default_value = ".")]
-    dir: PathBuf,
+    dir: String,
 
     /// Port to listen on
     #[arg(long, default_value_t = 7777)]
@@ -70,15 +70,16 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let dir = cli.dir.canonicalize().unwrap_or(cli.dir.clone());
+    let resolved = source::resolve(&cli.dir)?;
 
     // Subcommands run without the HTTP server.
     if let Some(cmd) = &cli.cmd {
-        return run_subcommand(cmd, &dir).await;
+        return run_subcommand(cmd, &resolved).await;
     }
 
-    println!("→ Scanning {}...", dir.display());
-    let files = scan::scan_dir(&dir)?;
+    println!("→ Source: {}", resolved.label);
+    let files = resolved.files.clone();
+    let dir = resolved.dir.clone();
     let total_bytes: u64 = files.iter().map(|f| f.size).sum();
     println!("→ Found {} files ({:.2} MB)", files.len(), total_bytes as f64 / 1_048_576.0);
 
@@ -139,9 +140,8 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_subcommand(cmd: &Cmd, dir: &std::path::Path) -> Result<()> {
-    let files = scan::scan_dir(dir)?;
-    let state = server::AppState::new(dir.to_path_buf(), files, None)?;
+async fn run_subcommand(cmd: &Cmd, resolved: &source::Resolved) -> Result<()> {
+    let state = server::AppState::new(resolved.dir.clone(), resolved.files.clone(), None)?;
     let db = state.db.lock().unwrap_or_else(|e| e.into_inner());
     match cmd {
         Cmd::Query { sql, format } => {

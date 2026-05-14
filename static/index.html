@@ -92,6 +92,34 @@ button:hover { filter: brightness(1.1); }
 .col-stats .row .v { color: var(--ok); min-width: 60px; text-align: right; }
 .results th { cursor: pointer; }
 .results th:hover { background: var(--panel2); color: var(--accent); }
+
+/* Tabs */
+.tabs { display: flex; background: var(--panel); border-bottom: 1px solid var(--border); }
+.tab { padding: 6px 12px; border-right: 1px solid var(--border); cursor: pointer;
+  font-family: var(--mono); font-size: 12px; color: var(--dim);
+  display: flex; align-items: center; gap: 6px; max-width: 200px; }
+.tab.active { background: var(--panel2); color: var(--fg); }
+.tab:hover { color: var(--accent); }
+.tab .x { color: var(--dim); cursor: pointer; padding: 0 2px; }
+.tab .x:hover { color: var(--err); }
+.tab-new { padding: 6px 10px; cursor: pointer; color: var(--accent); font-weight: 600; }
+
+/* Histogram brush */
+.histogram { position: relative; user-select: none; }
+.brush { position: absolute; top: 8px; bottom: 8px; background: rgba(88,166,255,0.18);
+  border-left: 1px solid var(--accent); border-right: 1px solid var(--accent);
+  pointer-events: none; display: none; }
+.brush.show { display: block; }
+.brush-clear { position: absolute; top: 4px; right: 4px; font-size: 10px;
+  background: var(--panel); color: var(--dim); border: 1px solid var(--border);
+  padding: 2px 6px; border-radius: 3px; cursor: pointer; display: none; }
+.brush-clear.show { display: block; }
+
+/* Query history panel */
+.history-item { padding: 6px 12px; border-bottom: 1px solid #1f262e; cursor: pointer;
+  font-family: var(--mono); font-size: 11px; color: var(--dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.history-item:hover { background: var(--panel2); color: var(--fg); }
 </style>
 </head>
 <body>
@@ -118,6 +146,7 @@ button:hover { filter: brightness(1.1); }
   </div>
 
   <div class="center">
+    <div class="tabs" id="tabs"></div>
     <div class="editor">
       <textarea id="sql" spellcheck="false"></textarea>
       <div class="row">
@@ -135,13 +164,19 @@ button:hover { filter: brightness(1.1); }
         </span>
       </div>
     </div>
-    <div class="histogram"><svg id="hist"></svg></div>
+    <div class="histogram" id="hist-wrap">
+      <svg id="hist"></svg>
+      <div class="brush" id="brush"></div>
+      <button class="brush-clear" id="brush-clear">clear range</button>
+    </div>
     <div class="results" id="results"></div>
   </div>
 
   <div class="panel" id="right">
     <h2>Saved Queries</h2>
     <div id="saved"></div>
+    <h2>History</h2>
+    <div id="history"></div>
     <h2>Live Tail</h2>
     <div id="tail"></div>
   </div>
@@ -149,7 +184,82 @@ button:hover { filter: brightness(1.1); }
 
 <script>
 const $ = (s) => document.querySelector(s);
-const state = { meta: null, lastSql: "", lastResult: null, view: "table", tailWs: null };
+const state = {
+  meta: null, lastSql: "", lastResult: null, view: "table", tailWs: null,
+  tabs: [], activeTab: 0,
+  history: JSON.parse(localStorage.getItem("logq.history") || "[]"),
+  brushRange: null, // {from, to} when active
+};
+
+const HISTORY_MAX = 100;
+function pushHistory(sql) {
+  if (!sql || sql.trim().length < 5) return;
+  state.history = state.history.filter(h => h !== sql);
+  state.history.unshift(sql);
+  if (state.history.length > HISTORY_MAX) state.history.length = HISTORY_MAX;
+  localStorage.setItem("logq.history", JSON.stringify(state.history));
+  renderHistory();
+}
+function renderHistory() {
+  $("#history").innerHTML = state.history.slice(0, 25).map((h, i) =>
+    `<div class="history-item" data-i="${i}" title="${h.replace(/"/g, '&quot;')}">${h.replace(/\s+/g, " ").slice(0, 80)}</div>`
+  ).join("");
+  document.querySelectorAll(".history-item").forEach(el => {
+    el.addEventListener("click", () => {
+      $("#sql").value = state.history[Number(el.dataset.i)];
+      runQuery();
+    });
+  });
+}
+
+function loadTabs() {
+  state.tabs = JSON.parse(localStorage.getItem("logq.tabs") || "[]");
+  if (state.tabs.length === 0) state.tabs = [{ name: "1", sql: "" }];
+  state.activeTab = Math.min(Number(localStorage.getItem("logq.activeTab") || "0"), state.tabs.length - 1);
+}
+function saveTabs() {
+  state.tabs[state.activeTab].sql = $("#sql").value;
+  localStorage.setItem("logq.tabs", JSON.stringify(state.tabs));
+  localStorage.setItem("logq.activeTab", String(state.activeTab));
+}
+function renderTabs() {
+  $("#tabs").innerHTML = state.tabs.map((t, i) =>
+    `<div class="tab ${i === state.activeTab ? 'active' : ''}" data-i="${i}">
+       <span>${t.name}</span>
+       ${state.tabs.length > 1 ? `<span class="x" data-x="${i}">×</span>` : ''}
+     </div>`
+  ).join("") + `<div class="tab-new" id="tab-new">+</div>`;
+  document.querySelectorAll(".tab").forEach(el => {
+    el.addEventListener("click", (e) => {
+      if (e.target.dataset.x !== undefined) return;
+      saveTabs();
+      state.activeTab = Number(el.dataset.i);
+      $("#sql").value = state.tabs[state.activeTab].sql;
+      renderTabs();
+      saveTabs();
+    });
+  });
+  document.querySelectorAll(".tab .x").forEach(el => {
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const i = Number(el.dataset.x);
+      state.tabs.splice(i, 1);
+      if (state.activeTab >= state.tabs.length) state.activeTab = state.tabs.length - 1;
+      $("#sql").value = state.tabs[state.activeTab].sql;
+      renderTabs();
+      saveTabs();
+    });
+  });
+  $("#tab-new").addEventListener("click", () => {
+    saveTabs();
+    const n = state.tabs.length + 1;
+    state.tabs.push({ name: String(n), sql: "" });
+    state.activeTab = state.tabs.length - 1;
+    $("#sql").value = "";
+    renderTabs();
+    saveTabs();
+  });
+}
 
 async function api(path, body) {
   const opts = { method: body ? "POST" : "GET", headers: { "Content-Type": "application/json" } };
@@ -236,7 +346,8 @@ async function loadHistogram() {
   if (!state.meta?.timestamp_col) return;
   const r = await api("/api/histogram", { buckets: 60 });
   const svg = $("#hist");
-  if (r.error || !r.buckets.length) { svg.innerHTML = ""; return; }
+  if (r.error || !r.buckets.length) { svg.innerHTML = ""; state.lastHistBuckets = null; return; }
+  state.lastHistBuckets = r.buckets;
   const w = svg.clientWidth, h = svg.clientHeight;
   const max = Math.max(...r.buckets.map(b => b.count));
   const bw = w / r.buckets.length;
@@ -255,8 +366,23 @@ function cellHtml(v) {
 }
 
 async function runQuery() {
-  const sql = $("#sql").value;
+  let sql = $("#sql").value;
+  if (state.brushRange) {
+    const col = state.meta?.timestamp_col;
+    if (col && !sql.toLowerCase().includes("/* brushed */")) {
+      const where = `"${col}" BETWEEN TIMESTAMP '${state.brushRange.from}' AND TIMESTAMP '${state.brushRange.to}'`;
+      if (/\bwhere\b/i.test(sql)) {
+        sql = sql.replace(/\bwhere\b/i, `WHERE ${where} AND /* brushed */`);
+      } else {
+        const m = sql.match(/(\s+(group|order|limit)\b)/i);
+        if (m) sql = sql.slice(0, m.index) + ` WHERE ${where} /* brushed */` + sql.slice(m.index);
+        else sql = sql + ` WHERE ${where} /* brushed */`;
+      }
+    }
+  }
   state.lastSql = sql;
+  pushHistory(sql);
+  saveTabs();
   syncUrl();
   $("#status").textContent = "running...";
   const r = await api("/api/query", { sql });
@@ -523,6 +649,66 @@ $("#sql").addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); runQuery(); }
 });
 
+// Brush selection on histogram
+(function setupBrush() {
+  const wrap = $("#hist-wrap");
+  const brush = $("#brush");
+  const clearBtn = $("#brush-clear");
+  let downX = null;
+  wrap.addEventListener("mousedown", (e) => {
+    if (e.target.id === "brush-clear") return;
+    const rect = wrap.getBoundingClientRect();
+    downX = e.clientX - rect.left;
+    brush.style.left = downX + "px";
+    brush.style.width = "0px";
+    brush.classList.add("show");
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (downX === null) return;
+    const rect = wrap.getBoundingClientRect();
+    const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+    const left = Math.min(downX, x);
+    const w = Math.abs(x - downX);
+    brush.style.left = left + "px";
+    brush.style.width = w + "px";
+  });
+  window.addEventListener("mouseup", (e) => {
+    if (downX === null) return;
+    const rect = wrap.getBoundingClientRect();
+    const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+    const left = Math.min(downX, x);
+    const right = Math.max(downX, x);
+    downX = null;
+    if (Math.abs(right - left) < 5) {
+      brush.classList.remove("show");
+      clearBtn.classList.remove("show");
+      state.brushRange = null;
+      return;
+    }
+    // Map pixel range to timestamps via current histogram bucket labels
+    const buckets = state.lastHistBuckets;
+    if (!buckets || buckets.length === 0) return;
+    const px = rect.width;
+    const iLeft = Math.floor((left / px) * buckets.length);
+    const iRight = Math.min(buckets.length - 1, Math.floor((right / px) * buckets.length));
+    state.brushRange = {
+      from: buckets[iLeft].bucket.replace(/\+\d{2}:\d{2}$/, "").replace("T", " "),
+      to:   buckets[iRight].bucket.replace(/\+\d{2}:\d{2}$/, "").replace("T", " "),
+    };
+    clearBtn.classList.add("show");
+    runQuery();
+  });
+  clearBtn.addEventListener("click", () => {
+    state.brushRange = null;
+    brush.classList.remove("show");
+    clearBtn.classList.remove("show");
+    runQuery();
+  });
+})();
+
+loadTabs();
+renderTabs();
+renderHistory();
 api("/api/meta").then(renderMeta);
 </script>
 </body>

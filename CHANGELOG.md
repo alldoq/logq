@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.1.4 (2026-05-14)
+
+- **stdin pipe mode**: `kubectl logs ... | logq -`. Stdin is sniffed
+  (JSON vs text) and routed through the same scan/parse pipeline as a
+  directory.
+- **Remote sources via DuckDB httpfs**: pass an `http(s)://` or `s3://`
+  URL to a single file. `logq` loads the httpfs extension on demand and
+  registers the URL directly as the source.
+- **Nginx/Apache combined log auto-parse**. Detected at scan time and
+  exposed as structured columns (`remote_addr`, `method`, `path`,
+  `status`, `bytes`).
+- **Syslog auto-parse** for RFC3164 and RFC5424 formats; exposes `host`,
+  `app`, `pid` (5424) on top of `ts` and `msg`.
+- **Histogram time-range brush**: click-drag on the histogram to inject
+  a `WHERE ts BETWEEN ...` into the next query. "Clear range" reverts.
+- **Multi-tab editor + query history**: persisted to localStorage; up
+  to 100 recent queries surfaced in a right-panel history list.
+
 ## v0.1.3 (2026-05-14)
 
 - Plain-text log support (`.log`, `.txt`, `.out`, `.log.gz`). Each line

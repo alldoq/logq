@@ -72,7 +72,7 @@ footer a { color: var(--accent); text-decoration: none; }
   <h1>logq</h1>
   <div class="tag">A local-first, single-binary log explorer.<br>
     Point it at a folder of JSONL, CSV, or Parquet files and get SQL, histograms, charts, and live tail in seconds.</div>
-  <div class="pill">v0.1.3 · DuckDB-powered · MIT/Apache-2.0</div>
+  <div class="pill">v0.1.4 · DuckDB-powered · MIT/Apache-2.0</div>
   <div class="cta">
     <a class="btn primary" href="https://github.com/alldoq/logq">View on GitHub</a>
     <a class="btn secondary" href="https://github.com/alldoq/logq/releases">Download</a>
@@ -191,6 +191,29 @@ cargo build --release
     <h3>Single binary</h3>
     <p>Bundles DuckDB and the web UI. No daemons, no dependencies, no
       system DuckDB needed. About 34 MB.</p>
+  </div>
+  <div class="card">
+    <h3>stdin + remote sources</h3>
+    <p><code>kubectl logs ... | logq -</code>, or point at an
+      <code>https://</code> or <code>s3://</code> URL. DuckDB httpfs is
+      loaded on demand.</p>
+  </div>
+  <div class="card">
+    <h3>nginx, apache, syslog</h3>
+    <p>Plain-text access logs and syslog (RFC3164 + RFC5424) are
+      detected at scan time and exposed as structured columns:
+      <code>remote_addr</code>, <code>method</code>, <code>path</code>,
+      <code>status</code>, <code>host</code>, <code>app</code>.</p>
+  </div>
+  <div class="card">
+    <h3>Time-range brush</h3>
+    <p>Click-drag on the histogram to scope every query to a window.
+      Pairs naturally with the level facet for incident triage.</p>
+  </div>
+  <div class="card">
+    <h3>Tabs + history</h3>
+    <p>Multi-tab editor with persistent state. The last 100 queries
+      surface in a one-click history panel.</p>
   </div>
 </div>
 
