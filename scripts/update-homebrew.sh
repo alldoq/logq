@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Render packaging/homebrew/logq.rb.tmpl using SHA256 sums from a published
-# GitHub release. Output is printed to stdout — pipe it into your tap.
+# GitHub release. Output is printed to stdout; pipe it into your tap.
 #
 # Usage:
 #   scripts/update-homebrew.sh v0.1.2 > Formula/logq.rb

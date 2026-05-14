@@ -11,7 +11,7 @@ use tokio::sync::broadcast;
 /// Blocking watcher: monitors all files; emits each newly-appended line on `tx`.
 /// Skips gzipped files (no tail semantics).
 pub fn watch(files: Vec<PathBuf>, tx: broadcast::Sender<String>) -> Result<()> {
-    // Initialise per-file read offset at current EOF — only new content streams.
+    // Initialise per-file read offset at current EOF so only new content streams.
     let mut offsets: HashMap<PathBuf, u64> = HashMap::new();
     for p in &files {
         if is_gz(p) { continue; }
@@ -90,7 +90,7 @@ fn read_new_lines(path: &PathBuf, from: u64, tx: &broadcast::Sender<String>) -> 
                 let _ = tx.send(payload);
             }
         } else {
-            // partial trailing line — rewind to keep it for next read
+            // partial trailing line; rewind to keep it for next read
             last -= n as u64;
             break;
         }

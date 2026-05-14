@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>logq — local-first JSONL log explorer</title>
-<meta name="description" content="Point logq at a folder of JSONL logs. Get a local web UI with SQL, time-series histograms, and faceted search in seconds. Powered by DuckDB." />
+<title>logq: local-first log explorer</title>
+<meta name="description" content="Point logq at a folder of JSONL, CSV, or Parquet logs and get a local web UI with SQL, time-series histograms, faceted search, charts, live tail, and exports. Powered by DuckDB." />
 <style>
 :root {
   --bg: #0e1116; --panel: #161b22; --panel2: #1c232c;
@@ -71,17 +71,17 @@ footer a { color: var(--accent); text-decoration: none; }
 <header>
   <h1>logq</h1>
   <div class="tag">A local-first, single-binary log explorer.<br>
-    Point it at a folder of JSONL files — get SQL, histograms, and faceted search in seconds.</div>
-  <div class="pill">v0.1 · DuckDB-powered · MIT/Apache-2.0</div>
+    Point it at a folder of JSONL, CSV, or Parquet files and get SQL, histograms, charts, and live tail in seconds.</div>
+  <div class="pill">v0.1.3 · DuckDB-powered · MIT/Apache-2.0</div>
   <div class="cta">
-    <a class="btn primary" href="https://github.com/alldoq/logq">View on GitHub →</a>
+    <a class="btn primary" href="https://github.com/alldoq/logq">View on GitHub</a>
     <a class="btn secondary" href="https://github.com/alldoq/logq/releases">Download</a>
   </div>
 </header>
 
 <h2>The problem</h2>
 <p>When production breaks, your options are: <code>ssh + tail + jq</code> (slow, error-prone),
-ship logs to a SaaS (expensive, slow to set up), or stand up Loki/Elastic
+ship logs to a SaaS (expensive, slow to set up), or stand up Loki or Elastic
 (ops-heavy overkill). There's no good middle option for
 <em>"I have a folder of JSONL files, I want to explore them right now, locally,
 with real query power."</em></p>
@@ -89,76 +89,129 @@ with real query power."</em></p>
 <h2>30-second demo</h2>
 <div class="terminal">
 <span class="pr">$</span> logq ./var/log<br>
-<span class="arrow">→</span> Scanning ./var/log... found 14 files (3.2 GB)<br>
-<span class="arrow">→</span> Detected: jsonl (12 files), gz-jsonl (2 files)<br>
-<span class="arrow">→</span> Inferred timestamp column: "ts"<br>
-<span class="arrow">→</span> Inferred level column: "level"<br>
-<span class="arrow">→</span> <span class="url">http://localhost:7777</span>
+<span class="arrow">&gt;</span> Scanning ./var/log... found 14 files (3.2 GB)<br>
+<span class="arrow">&gt;</span> Detected: jsonl (12 files), gz-jsonl (2 files)<br>
+<span class="arrow">&gt;</span> Inferred timestamp column: "ts"<br>
+<span class="arrow">&gt;</span> Inferred level column: "level"<br>
+<span class="arrow">&gt;</span> <span class="url">http://localhost:7777</span>
 </div>
-<p>Browser opens. You see a timestamp histogram, facet panel (auto-detected
-low-cardinality fields like <code>level</code> / <code>service</code> / <code>host</code>),
-results table, and a SQL editor pre-filled with a sensible default.</p>
+<p>Browser opens. You see a timestamp histogram, a facet panel (auto-detected
+low-cardinality fields like <code>level</code>, <code>service</code>, <code>host</code>),
+a results table, and a SQL editor pre-filled with a sensible default.</p>
 
 <h2>The five-property bar</h2>
 <table>
   <thead><tr><th>Property</th><th>Why it matters</th></tr></thead>
   <tbody>
-    <tr><td><strong>Local-first</strong></td><td>No SaaS, no account, runs fully offline / air-gapped</td></tr>
-    <tr><td><strong>File-native</strong></td><td>Queries <code>.jsonl</code> / <code>.json.gz</code> directly — no ingestion</td></tr>
-    <tr><td><strong>JSON-log-aware</strong></td><td>Auto-infers schema, nested fields, timestamps, levels</td></tr>
-    <tr><td><strong>SQL-powered</strong></td><td>Full DuckDB SQL — joins, window functions, aggregations</td></tr>
-    <tr><td><strong>Real web UI</strong></td><td>Browser, not TUI. Shareable URLs, charts, faceted search</td></tr>
+    <tr><td><strong>Local-first</strong></td><td>No SaaS, no account, runs fully offline / air-gapped.</td></tr>
+    <tr><td><strong>File-native</strong></td><td>Queries <code>.jsonl</code>, <code>.csv</code>, and <code>.parquet</code> directly. No ingestion.</td></tr>
+    <tr><td><strong>JSON-log-aware</strong></td><td>Auto-infers schema, nested fields, timestamps, levels.</td></tr>
+    <tr><td><strong>SQL-powered</strong></td><td>Full DuckDB SQL: joins, window functions, aggregations.</td></tr>
+    <tr><td><strong>Real web UI</strong></td><td>Browser, not TUI. Shareable URLs, charts, faceted search.</td></tr>
   </tbody>
 </table>
 <p>No existing tool combines all five. DuckDB UI isn't log-shaped. Tailpipe
 requires ingestion. lnav is terminal-only. Logdy has no SQL.</p>
 
 <h2>Quickstart</h2>
-<pre><code>git clone https://github.com/alldoq/logq.git
+<pre><code># Homebrew
+brew install alldoq/tap/logq
+logq ./var/log
+
+# Docker
+docker run --rm -p 7777:7777 -v "$PWD/logs:/data" ghcr.io/alldoq/logq:latest
+
+# From source
+git clone https://github.com/alldoq/logq.git
 cd logq
 cargo build --release
 ./target/release/logq ./sample-data</code></pre>
 
-<h2>Killer features</h2>
+<h2>Features</h2>
 <div class="grid">
   <div class="card">
+    <h3>JSONL, CSV, Parquet</h3>
+    <p>All UNION'd by name into one <code>logs</code> view via DuckDB
+      <code>read_json_auto</code>, <code>read_csv_auto</code>, and
+      <code>read_parquet</code>. Gzip and zstd handled.</p>
+  </div>
+  <div class="card">
     <h3>Cross-file joins</h3>
-    <p><code>SELECT * FROM 'app/*.jsonl' a JOIN 'nginx/*.jsonl' n ON a.request_id = n.request_id</code>.
+    <p><code>SELECT * FROM logs WHERE service='api' AND request_id IN
+      (SELECT request_id FROM logs WHERE service='nginx' AND status&gt;=500)</code>.
       No pipeline.</p>
   </div>
   <div class="card">
-    <h3>Auto-schema</h3>
-    <p>Run DuckDB's <code>read_json_auto</code> over your files. Timestamps,
-      levels, and trace IDs detected automatically.</p>
+    <h3>Live tail</h3>
+    <p>Toggle button streams newly appended lines over WebSocket, with
+      optional <code>--remote user@host:/path</code> over SSH.</p>
   </div>
   <div class="card">
-    <h3>Faceted search</h3>
-    <p>Low-cardinality fields surface as click-to-filter facets.
-      One click to scope your query.</p>
+    <h3>Charts</h3>
+    <p>Switch any GROUP BY result between table, bar, and line views.
+      Column headers open a top-25 value modal.</p>
+  </div>
+  <div class="card">
+    <h3>JSON cell expand</h3>
+    <p>Click a nested cell to open a pretty-printed JSON modal with the
+      full structure. No truncation.</p>
+  </div>
+  <div class="card">
+    <h3>Export</h3>
+    <p>CSV and Parquet download buttons run a <code>COPY (...) TO</code>
+      over the current query. Round-trip cleanly into another logq.</p>
   </div>
   <div class="card">
     <h3>Saved queries</h3>
-    <p>Saves to <code>.logq/queries.yml</code> in the directory.
-      Git-friendly, shareable with your teammates.</p>
+    <p>Persist named queries to <code>.logq/queries.yml</code> in the
+      directory. Git-friendly, shareable.</p>
+  </div>
+  <div class="card">
+    <h3>Schema overrides</h3>
+    <p>Drop a <code>.logq/schema.yml</code> to coerce columns to
+      TIMESTAMP, BIGINT, DOUBLE, etc., with optional strptime format.</p>
+  </div>
+  <div class="card">
+    <h3>HTTP API + token</h3>
+    <p>Versioned <code>/api/v1/*</code>, optional bearer-token auth via
+      <code>--token</code> or <code>LOGQ_TOKEN</code>. Health endpoint
+      for monitoring.</p>
+  </div>
+  <div class="card">
+    <h3>CLI mode</h3>
+    <p><code>logq /dir query "SELECT ..."</code> for one-shot queries.
+      Output as JSON, NDJSON, CSV, or TSV. No web server needed.</p>
+  </div>
+  <div class="card">
+    <h3>Shareable URLs</h3>
+    <p>Every query state is encoded in the URL hash. Copy-link button
+      copies to clipboard; teammates open the same view.</p>
   </div>
   <div class="card">
     <h3>Single binary</h3>
-    <p>Bundles DuckDB and the web UI. No daemons, no dependencies,
-      no system DuckDB needed.</p>
-  </div>
-  <div class="card">
-    <h3>Fast</h3>
-    <p>Aggregations across 460k rows / 150 MB of JSONL in ~200 ms
-      on a laptop. The disk is the database.</p>
+    <p>Bundles DuckDB and the web UI. No daemons, no dependencies, no
+      system DuckDB needed. About 34 MB.</p>
   </div>
 </div>
 
+<h2>API at a glance</h2>
+<pre><code>curl -s localhost:7777/api/health
+curl -s localhost:7777/api/v1/meta
+curl -s -X POST localhost:7777/api/v1/query \
+  -H 'Content-Type: application/json' \
+  -d '{"sql":"SELECT level, COUNT(*) FROM logs GROUP BY 1"}'
+
+# Auth (when --token is set)
+curl -H "Authorization: Bearer $LOGQ_TOKEN" localhost:7777/api/v1/meta</code></pre>
+
 <h2>Status</h2>
-<p>v0.1 MVP — open to revision once it's in real hands. Coming next:
-live tail, remote tail over SSH, column-type overrides, hardening for 100 GB+ datasets.</p>
+<p>v0.1.2 covers the v0.1 MVP plus most v0.5/v1.0 items: live tail, remote
+tail over SSH, schema overrides, CSV/Parquet ingest, charts, exports, Docker
+image, Homebrew tap, versioned HTTP API. Performance hardening for 100 GB+
+datasets and a daemon/alert mode are still ahead.</p>
 
 <footer>
-  <a href="https://github.com/alldoq/logq">GitHub</a> · MIT OR Apache-2.0
+  <a href="https://github.com/alldoq/logq">GitHub</a> · <a href="https://github.com/alldoq/logq/releases">Releases</a> · MIT OR Apache-2.0
 </footer>
 </div>
 </body>

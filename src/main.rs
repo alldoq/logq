@@ -7,7 +7,7 @@ mod zst;
 mod remote;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -37,6 +37,29 @@ struct Cli {
     /// Multiple allowed. Requires `ssh` on PATH and key-based auth.
     #[arg(long = "remote")]
     remote: Vec<String>,
+
+    /// Require this bearer token on every /api/* request (also honours
+    /// LOGQ_TOKEN env var). Useful when binding to 0.0.0.0.
+    #[arg(long)]
+    token: Option<String>,
+
+    #[command(subcommand)]
+    cmd: Option<Cmd>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Cmd {
+    /// Run a one-shot SQL query against the directory and print JSON/CSV/TSV to stdout.
+    Query {
+        /// SQL to run against the `logs` view
+        #[arg(value_name = "SQL")]
+        sql: String,
+        /// Output format: json (default), ndjson, csv, tsv
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+    /// Print the inferred schema (columns + types) as JSON.
+    Schema {},
 }
 
 #[tokio::main]
@@ -48,6 +71,11 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let dir = cli.dir.canonicalize().unwrap_or(cli.dir.clone());
+
+    // Subcommands run without the HTTP server.
+    if let Some(cmd) = &cli.cmd {
+        return run_subcommand(cmd, &dir).await;
+    }
 
     println!("→ Scanning {}...", dir.display());
     let files = scan::scan_dir(&dir)?;
@@ -61,7 +89,11 @@ async fn main() -> Result<()> {
         println!("→ Detected: {}", parts.join(", "));
     }
 
-    let state = server::AppState::new(dir.clone(), files)?;
+    let token = cli.token.clone().or_else(|| std::env::var("LOGQ_TOKEN").ok().filter(|s| !s.is_empty()));
+    let state = server::AppState::new(dir.clone(), files, token.clone())?;
+    if token.is_some() {
+        println!("→ Auth: bearer token required for /api/*");
+    }
 
     if let Some(ts) = &state.inferred_ts_col {
         println!("→ Inferred timestamp column: \"{}\"", ts);
@@ -105,4 +137,61 @@ async fn main() -> Result<()> {
 
     server::serve(state, &cli.host, cli.port).await?;
     Ok(())
+}
+
+async fn run_subcommand(cmd: &Cmd, dir: &std::path::Path) -> Result<()> {
+    let files = scan::scan_dir(dir)?;
+    let state = server::AppState::new(dir.to_path_buf(), files, None)?;
+    let db = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    match cmd {
+        Cmd::Query { sql, format } => {
+            let r = db.query(sql)?;
+            print_result(&r, format)?;
+        }
+        Cmd::Schema {} => {
+            let cols: Vec<serde_json::Value> = state.columns.iter()
+                .map(|(n, t)| serde_json::json!({"name": n, "type": t}))
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&cols)?);
+        }
+    }
+    Ok(())
+}
+
+fn print_result(r: &db::QueryResult, format: &str) -> Result<()> {
+    match format {
+        "json" => {
+            let v = serde_json::json!({ "columns": r.columns, "rows": r.rows });
+            println!("{}", serde_json::to_string(&v)?);
+        }
+        "ndjson" => {
+            for row in &r.rows {
+                let obj: serde_json::Map<String, serde_json::Value> =
+                    r.columns.iter().cloned().zip(row.iter().cloned()).collect();
+                println!("{}", serde_json::Value::Object(obj));
+            }
+        }
+        "csv" | "tsv" => {
+            let sep = if format == "tsv" { '\t' } else { ',' };
+            println!("{}", r.columns.join(&sep.to_string()));
+            for row in &r.rows {
+                let cells: Vec<String> = row.iter().map(|v| match v {
+                    serde_json::Value::Null => String::new(),
+                    serde_json::Value::String(s) => csv_escape(s, sep),
+                    other => csv_escape(&other.to_string(), sep),
+                }).collect();
+                println!("{}", cells.join(&sep.to_string()));
+            }
+        }
+        other => anyhow::bail!("unknown format: {other} (use json, ndjson, csv, tsv)"),
+    }
+    Ok(())
+}
+
+fn csv_escape(s: &str, sep: char) -> String {
+    if s.contains(sep) || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
 }

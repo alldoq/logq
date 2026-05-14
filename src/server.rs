@@ -7,10 +7,12 @@ use crate::scan::FileEntry;
 use anyhow::Result;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
-use axum::http::{header, StatusCode, Uri};
+use axum::http::{header, Request, StatusCode, Uri};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use std::collections::HashMap;
 use tokio::sync::broadcast;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
@@ -33,10 +35,11 @@ pub struct AppState {
     pub tail_enabled: std::sync::atomic::AtomicBool,
     #[allow(dead_code)]
     pub tempdir: Option<tempfile::TempDir>,
+    pub token: Option<String>,
 }
 
 impl AppState {
-    pub fn new(dir: PathBuf, files: Vec<FileEntry>) -> Result<Arc<Self>> {
+    pub fn new(dir: PathBuf, files: Vec<FileEntry>, token: Option<String>) -> Result<Arc<Self>> {
         let db = Db::open()?;
         // Decompress any .zst files to a tempdir so DuckDB can read them.
         let mut tempdir: Option<tempfile::TempDir> = None;
@@ -79,21 +82,33 @@ impl AppState {
             tail_tx,
             tail_enabled: std::sync::atomic::AtomicBool::new(false),
             tempdir,
+            token,
         }))
     }
 }
 
 pub async fn serve(state: Arc<AppState>, host: &str, port: u16) -> Result<()> {
+    // Versioned + legacy routes mounted twice so external callers can pin /api/v1.
+    let api_routes = || Router::new()
+        .route("/meta", get(meta))
+        .route("/query", post(query))
+        .route("/histogram", post(histogram))
+        .route("/saved", get(get_saved).post(post_saved))
+        .route("/saved/delete", post(delete_saved))
+        .route("/tail", get(tail_ws))
+        .route("/tail/start", post(tail_start))
+        .route("/column-stats", post(column_stats))
+        .route("/export", post(export_data));
+
+    let api_router = Router::new()
+        .nest("/api", api_routes())
+        .nest("/api/v1", api_routes())
+        .route("/api/health", get(health))
+        .route("/api/v1/health", get(health))
+        .layer(middleware::from_fn_with_state(state.clone(), auth_layer));
+
     let app = Router::new()
-        .route("/api/meta", get(meta))
-        .route("/api/query", post(query))
-        .route("/api/histogram", post(histogram))
-        .route("/api/saved", get(get_saved).post(post_saved))
-        .route("/api/saved/delete", post(delete_saved))
-        .route("/api/tail", get(tail_ws))
-        .route("/api/tail/start", post(tail_start))
-        .route("/api/column-stats", post(column_stats))
-        .route("/api/export", post(export_data))
+        .merge(api_router)
         .fallback(static_handler)
         .with_state(state);
 
@@ -378,6 +393,73 @@ async fn export_data(State(s): State<Arc<AppState>>, Json(req): Json<ExportReq>)
 
 fn error_resp(msg: String) -> Response {
     (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": msg}))).into_response()
+}
+
+async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "status": "ok",
+        "version": env!("CARGO_PKG_VERSION"),
+        "dir": s.dir.to_string_lossy(),
+        "files": s.files.len(),
+        "columns": s.columns.len(),
+    }))
+}
+
+async fn auth_layer(
+    State(s): State<Arc<AppState>>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let Some(expected) = s.token.as_deref() else {
+        return Ok(next.run(req).await);
+    };
+    // Bearer header
+    if let Some(h) = req.headers().get(axum::http::header::AUTHORIZATION) {
+        if let Ok(v) = h.to_str() {
+            if v.strip_prefix("Bearer ").map(|t| t == expected).unwrap_or(false) {
+                return Ok(next.run(req).await);
+            }
+        }
+    }
+    // X-Logq-Token header
+    if let Some(h) = req.headers().get("x-logq-token") {
+        if let Ok(v) = h.to_str() {
+            if v == expected { return Ok(next.run(req).await); }
+        }
+    }
+    // ?token=... (needed for WebSocket upgrade where browsers can't set headers)
+    if let Some(q) = req.uri().query() {
+        let pairs: HashMap<String, String> = url_decode_pairs(q);
+        if pairs.get("token").map(|t| t == expected).unwrap_or(false) {
+            return Ok(next.run(req).await);
+        }
+    }
+    Err(StatusCode::UNAUTHORIZED)
+}
+
+fn url_decode_pairs(q: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for kv in q.split('&') {
+        if let Some((k, v)) = kv.split_once('=') {
+            out.insert(percent_decode(k), percent_decode(v));
+        }
+    }
+    out
+}
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(c) = u8::from_str_radix(&s[i+1..i+3], 16) {
+                out.push(c); i += 3; continue;
+            }
+        }
+        out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 async fn tail_start(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {

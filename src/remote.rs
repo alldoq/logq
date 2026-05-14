@@ -50,7 +50,7 @@ pub fn stream(spec: &str, tx: broadcast::Sender<String>) -> Result<()> {
 }
 
 /// Tail itself is a shell command, the path may contain a glob, so don't
-/// quote the whole path — instead just escape single-quotes so the user
+/// quote the whole path; instead just escape single-quotes so the user
 /// can pass `/var/log/*.jsonl` without surprises.
 fn shell_quote(s: &str) -> String {
     if s.chars().all(|c| c.is_alphanumeric() || matches!(c, '/' | '_' | '-' | '.' | '*' | '?' | '[' | ']')) {
